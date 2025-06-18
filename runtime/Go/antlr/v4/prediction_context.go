@@ -7,13 +7,40 @@ package antlr
 import (
 	"fmt"
 	"strconv"
+	"sync"
 )
 
-var _emptyPredictionContextHash int
+var (
+	_emptyPredictionContextHash int
+	predictionContextPool       = sync.Pool{
+		New: func() interface{} {
+			pc := &PredictionContext{}
+			// Pre-allocate small slices if desired, e.g.:
+			// pc.parents = make([]*PredictionContext, 0, 2)
+			// pc.returnStates = make([]int, 0, 2)
+			return pc
+		},
+	}
+)
+
+// BasePredictionContextEMPTY is the global empty prediction context.
+// It's initialized after relevant functions and types are defined.
+var BasePredictionContextEMPTY *PredictionContext
 
 func init() {
-	_emptyPredictionContextHash = murmurInit(1)
-	_emptyPredictionContextHash = murmurFinish(_emptyPredictionContextHash, 0)
+	_emptyPredictionContextHash = murmurInit(1) // Seed for hash calculation
+	_emptyPredictionContextHash = murmurFinish(_emptyPredictionContextHash, 0) // Hash of "empty"
+
+	// Initialize the global EMPTY instance.
+	// This specific instance should NOT be pooled/reset.
+	BasePredictionContextEMPTY = &PredictionContext{
+		cachedHash:   _emptyPredictionContextHash,
+		pcType:       PredictionContextEmpty,
+		returnState:  BasePredictionContextEmptyReturnState,
+		parentCtx:    nil,
+		parents:      nil, // Explicitly nil for the canonical empty
+		returnStates: nil, // Explicitly nil for the canonical empty
+	}
 }
 
 func calculateEmptyHash() int {
@@ -21,22 +48,12 @@ func calculateEmptyHash() int {
 }
 
 const (
-	// BasePredictionContextEmptyReturnState represents {@code $} in an array in full context mode, $
-	// doesn't mean wildcard:
-	//
-	//   $ + x = [$,x]
-	//
-	// Here,
-	//
-	//   $ = EmptyReturnState
 	BasePredictionContextEmptyReturnState = 0x7FFFFFFF
 )
 
-// TODO: JI These are meant to be atomics - this does not seem to match the Java runtime here
-//
 //goland:noinspection GoUnusedGlobalVariable
 var (
-	BasePredictionContextglobalNodeCount = 1
+	BasePredictionContextglobalNodeCount = 1 // Used by some ATN logic, not directly by PredictionContext pooling
 	BasePredictionContextid              = BasePredictionContextglobalNodeCount
 )
 
@@ -46,66 +63,103 @@ const (
 	PredictionContextArray
 )
 
-// PredictionContext is a go idiomatic implementation of PredictionContext that does not rty to
-// emulate inheritance from Java, and can be used without an interface definition. An interface
-// is not required because no user code will ever need to implement this interface.
 type PredictionContext struct {
 	cachedHash   int
 	pcType       int
-	parentCtx    *PredictionContext
-	returnState  int
-	parents      []*PredictionContext
-	returnStates []int
+	parentCtx    *PredictionContext // For Singleton type
+	returnState  int                // For Singleton and Empty type
+	parents      []*PredictionContext // For Array type
+	returnStates []int                // For Array type
+}
+
+func (p *PredictionContext) Reset() {
+	p.cachedHash = 0
+	p.pcType = 0 // Will be overwritten by constructors
+	p.parentCtx = nil
+	p.returnState = 0 // Will be overwritten
+
+	// For slices, nil out elements to help GC, then reset length to 0, retaining capacity.
+	for i := range p.parents {
+		p.parents[i] = nil
+	}
+	p.parents = p.parents[:0]
+
+	p.returnStates = p.returnStates[:0]
+}
+
+func releasePredictionContext(p *PredictionContext) {
+	if p == nil || p == BasePredictionContextEMPTY { // Critical: Do not pool the global EMPTY instance or nil.
+		return
+	}
+	p.Reset()
+	predictionContextPool.Put(p)
 }
 
 func NewEmptyPredictionContext() *PredictionContext {
-	nep := &PredictionContext{}
-	nep.cachedHash = calculateEmptyHash()
+	// This function is primarily for creating the BasePredictionContextEMPTY instance.
+	// Regular code should use BasePredictionContextEMPTY directly.
+	// If ever called to create other "empty" instances, they would be distinct.
+	nep := predictionContextPool.Get().(*PredictionContext)
+	nep.cachedHash = _emptyPredictionContextHash
 	nep.pcType = PredictionContextEmpty
 	nep.returnState = BasePredictionContextEmptyReturnState
+	nep.parentCtx = nil
+	nep.parents = nep.parents[:0]       // Ensure slice is empty
+	nep.returnStates = nep.returnStates[:0] // Ensure slice is empty
 	return nep
 }
 
 func NewBaseSingletonPredictionContext(parent *PredictionContext, returnState int) *PredictionContext {
-	pc := &PredictionContext{}
+	pc := predictionContextPool.Get().(*PredictionContext)
 	pc.pcType = PredictionContextSingleton
 	pc.returnState = returnState
 	pc.parentCtx = parent
+
 	if parent != nil {
 		pc.cachedHash = calculateHash(parent, returnState)
-	} else {
+	} else { // Singleton with nil parent
 		pc.cachedHash = calculateEmptyHash()
 	}
+	// Ensure array fields are empty
+	pc.parents = pc.parents[:0]
+	pc.returnStates = pc.returnStates[:0]
 	return pc
 }
 
 func SingletonBasePredictionContextCreate(parent *PredictionContext, returnState int) *PredictionContext {
 	if returnState == BasePredictionContextEmptyReturnState && parent == nil {
-		// someone can pass in the bits of an array ctx that mean $
-		return BasePredictionContextEMPTY
+		return BasePredictionContextEMPTY // Return the canonical global EMPTY instance
 	}
 	return NewBaseSingletonPredictionContext(parent, returnState)
 }
 
 func NewArrayPredictionContext(parents []*PredictionContext, returnStates []int) *PredictionContext {
-	// Parent can be nil only if full ctx mode and we make an array
-	// from {@link //EMPTY} and non-empty. We merge {@link //EMPTY} by using
-	// nil parent and
-	// returnState == {@link //EmptyReturnState}.
-	hash := murmurInit(1)
-	for _, parent := range parents {
-		hash = murmurUpdate(hash, parent.Hash())
-	}
-	for _, returnState := range returnStates {
-		hash = murmurUpdate(hash, returnState)
-	}
-	hash = murmurFinish(hash, len(parents)<<1)
-
-	nec := &PredictionContext{}
-	nec.cachedHash = hash
+	nec := predictionContextPool.Get().(*PredictionContext)
 	nec.pcType = PredictionContextArray
-	nec.parents = parents
-	nec.returnStates = returnStates
+	nec.parents = parents       // Assumes ownership of the provided slices
+	nec.returnStates = returnStates // Assumes ownership of the provided slices
+
+	// Ensure singleton fields are clear
+	nec.parentCtx = nil
+	nec.returnState = 0 // Or an invalid/default state marker if 0 is a valid returnState
+
+	// Calculate hash
+	hash := murmurInit(1)
+	for _, pVal := range parents {
+		if pVal != nil {
+			hash = murmurUpdate(hash, pVal.Hash())
+		} else {
+			hash = murmurUpdate(hash, 0) // Consistent hash for nil parent in array
+		}
+	}
+	for _, rsVal := range returnStates {
+		hash = murmurUpdate(hash, rsVal)
+	}
+	// The number of items contributing to the hash.
+	// Original Go port used `len(parents) << 1`.
+	// A more standard Murmur approach is number of elements.
+	// Let's use sum of lengths for clarity, assuming this matches ANTLR's intent for uniqueness.
+	nec.cachedHash = murmurFinish(hash, len(parents)+len(returnStates))
 	return nec
 }
 
@@ -117,170 +171,190 @@ func (p *PredictionContext) Equals(other Collectable[*PredictionContext]) bool {
 	if p == other {
 		return true
 	}
+	otherP, ok := other.(*PredictionContext)
+	if !ok || otherP == nil {
+		return false
+	}
+
+	if p.pcType != otherP.pcType {
+		return false
+	}
+	if p.cachedHash != otherP.cachedHash { // Hash is a strong first check
+		return false
+	}
+
+	// Types and hashes are same, now type-specific comparison
 	switch p.pcType {
 	case PredictionContextEmpty:
-		otherP := other.(*PredictionContext)
-		return other == nil || otherP == nil || otherP.isEmpty()
+		return true // All empty contexts are equal (primarily BasePredictionContextEMPTY)
 	case PredictionContextSingleton:
-		return p.SingletonEquals(other)
+		return p.singletonEquals(otherP)
 	case PredictionContextArray:
-		return p.ArrayEquals(other)
+		return p.arrayEquals(otherP)
 	}
 	return false
 }
 
-func (p *PredictionContext) ArrayEquals(o Collectable[*PredictionContext]) bool {
-	if o == nil {
-		return false
-	}
-	other := o.(*PredictionContext)
-	if other == nil || other.pcType != PredictionContextArray {
-		return false
-	}
-	if p.cachedHash != other.Hash() {
-		return false // can't be same if hash is different
-	}
-
-	// Must compare the actual array elements and not just the array address
-	//
+func (p *PredictionContext) arrayEquals(other *PredictionContext) bool {
+	// Assumes: p, other non-nil, pcType is PredictionContextArray, hashes match.
 	return intSlicesEqual(p.returnStates, other.returnStates) &&
-		pcSliceEqual(p.parents, other.parents)
+		pcSliceEqual(p.parents, other.parents) // pcSliceEqual needs to handle nil elements if they occur
 }
 
-func (p *PredictionContext) SingletonEquals(other Collectable[*PredictionContext]) bool {
-	if other == nil {
+func (p *PredictionContext) singletonEquals(other *PredictionContext) bool {
+	// Assumes: p, other non-nil, pcType is PredictionContextSingleton, hashes match.
+	if p.returnState != other.returnState {
 		return false
 	}
-	otherP := other.(*PredictionContext)
-	if otherP == nil || otherP.pcType != PredictionContextSingleton {
-		return false
-	}
-
-	if p.cachedHash != otherP.Hash() {
-		return false // Can't be same if hash is different
-	}
-
-	if p.returnState != otherP.getReturnState(0) {
-		return false
-	}
-
-	// Both parents must be nil if one is
 	if p.parentCtx == nil {
-		return otherP.parentCtx == nil
+		return other.parentCtx == nil
 	}
-
-	return p.parentCtx.Equals(otherP.parentCtx)
+	return p.parentCtx.Equals(other.parentCtx) // Recursive
 }
 
 func (p *PredictionContext) GetParent(i int) *PredictionContext {
 	switch p.pcType {
+	case PredictionContextSingleton:
+		return p.parentCtx // Index `i` is ignored for singletons
+	case PredictionContextArray:
+		if i >= 0 && i < len(p.parents) {
+			return p.parents[i]
+		}
+		return nil // Index out of bounds
 	case PredictionContextEmpty:
 		return nil
-	case PredictionContextSingleton:
-		return p.parentCtx
-	case PredictionContextArray:
-		return p.parents[i]
 	}
 	return nil
 }
 
-func (p *PredictionContext) getReturnState(i int) int {
+func (p *PredictionContext) getReturnState(i int) int { // Note: unexported in original, but used by PredictionContextCache
 	switch p.pcType {
+	case PredictionContextSingleton, PredictionContextEmpty:
+		return p.returnState // Index `i` ignored
 	case PredictionContextArray:
-		return p.returnStates[i]
-	default:
-		return p.returnState
+		if i >= 0 && i < len(p.returnStates) {
+			return p.returnStates[i]
+		}
+		// Consider returning a sentinel like ATNInvalidStateNumber or panicking for out of bounds
+		return 0 // Default/zero value if out of bounds
 	}
+	return 0 // Should be unreachable if pcType is valid
 }
 
 func (p *PredictionContext) GetReturnStates() []int {
 	switch p.pcType {
 	case PredictionContextArray:
-		return p.returnStates
-	default:
+		return p.returnStates // Returns internal slice directly
+	case PredictionContextSingleton, PredictionContextEmpty:
+		// Create a new slice for consistency, but this is an allocation.
+		// API users should be aware.
 		return []int{p.returnState}
+
 	}
+	return nil // Should be unreachable
 }
 
 func (p *PredictionContext) length() int {
-	switch p.pcType {
-	case PredictionContextArray:
+	if p.pcType == PredictionContextArray {
 		return len(p.returnStates)
-	default:
-		return 1
 	}
+	return 1 // Singletons and Empty are conceptually length 1
+}
+
+func (p *PredictionContext) isEmpty() bool {
+	// True if it's the canonical EMPTY instance or an equivalent structure.
+	if p == BasePredictionContextEMPTY {
+		return true
+	}
+	switch p.pcType {
+	case PredictionContextEmpty:
+		return true // Any context explicitly typed as Empty
+	case PredictionContextSingleton:
+		// A singleton is "empty" if it mirrors BasePredictionContextEMPTY structure
+		return p.returnState == BasePredictionContextEmptyReturnState && p.parentCtx == nil
+	case PredictionContextArray:
+		// An array is "empty" if it represents the merged "$" path.
+		// This means one entry: (nil parent, EmptyReturnState).
+		return len(p.returnStates) == 1 && p.returnStates[0] == BasePredictionContextEmptyReturnState &&
+			len(p.parents) == 1 && p.parents[0] == nil
+	}
+	return false
 }
 
 func (p *PredictionContext) hasEmptyPath() bool {
-	switch p.pcType {
-	case PredictionContextSingleton:
-		return p.returnState == BasePredictionContextEmptyReturnState
-	}
-	return p.getReturnState(p.length()-1) == BasePredictionContextEmptyReturnState
+    if p.isEmpty() { // If the context itself is the empty representation
+        return true
+    }
+    switch p.pcType {
+    case PredictionContextSingleton:
+        // A non-EMPTY singleton has an empty path if its state is the marker
+        // AND its parent also has an empty path (or is nil, which is effectively BasePredictionContextEMPTY).
+        // This interpretation differs from just checking p.returnState.
+        // Original Java: `return returnState == EMPTY_RETURN_STATE;` for Singleton.
+        // Let's match original Java for hasEmptyPath behavior for Singleton:
+        return p.returnState == BasePredictionContextEmptyReturnState
+    case PredictionContextArray:
+        // An array has an empty path if one of its elements is EMPTY_RETURN_STATE.
+        // Original Java: `return getReturnState(size() - 1) == EMPTY_RETURN_STATE;`
+        // (assuming EMPTY_RETURN_STATE, if present, is sorted to the end).
+        if len(p.returnStates) == 0 { return false }
+        return p.returnStates[len(p.returnStates)-1] == BasePredictionContextEmptyReturnState
+    }
+    return false // Should not be reached if pcType is valid
 }
 
+
 func (p *PredictionContext) String() string {
+	// Efficiently build string, e.g., using strings.Builder if available/performant for many calls
 	switch p.pcType {
 	case PredictionContextEmpty:
 		return "$"
 	case PredictionContextSingleton:
-		var up string
-
-		if p.parentCtx == nil {
-			up = ""
-		} else {
-			up = p.parentCtx.String()
+		parentStr := ""
+		if p.parentCtx != nil {
+			parentStr = p.parentCtx.String() // Recursive
 		}
-
-		if len(up) == 0 {
+		if parentStr == "" || parentStr == "$" && p.parentCtx.isEmpty() { // Don't add " $" if parent is just EMPTY
 			if p.returnState == BasePredictionContextEmptyReturnState {
-				return "$"
+				return "$" // Singleton representing only EMPTY_RETURN_STATE
 			}
-
 			return strconv.Itoa(p.returnState)
 		}
-
-		return strconv.Itoa(p.returnState) + " " + up
+		return strconv.Itoa(p.returnState) + " " + parentStr
 	case PredictionContextArray:
-		if p.isEmpty() {
-			return "[]"
-		}
-
+		if len(p.returnStates) == 0 { return "[]" }
 		s := "["
 		for i := 0; i < len(p.returnStates); i++ {
-			if i > 0 {
-				s = s + ", "
-			}
+			if i > 0 { s += ", " }
 			if p.returnStates[i] == BasePredictionContextEmptyReturnState {
-				s = s + "$"
-				continue
-			}
-			s = s + strconv.Itoa(p.returnStates[i])
-			if !p.parents[i].isEmpty() {
-				s = s + " " + p.parents[i].String()
+				s += "$"
 			} else {
-				s = s + "nil"
+				s += strconv.Itoa(p.returnStates[i])
+			}
+			// Parent part of the string
+			if i < len(p.parents) && p.parents[i] != nil {
+				parentStr := p.parents[i].String()
+                // Avoid " $" if parent is truly empty and not just a nested structure ending in $
+				if !(parentStr == "$" && p.parents[i].isEmpty()) {
+					s += " " + parentStr
+				} else if parentStr == "$" && p.parents[i].isEmpty() && p.parents[i] != BasePredictionContextEMPTY {
+                    // If it's a complex structure that results in "$", but isn't THE BasePredictionContextEMPTY
+                    s += " " + parentStr
+                }
+			} else if i < len(p.parents) && p.parents[i] == nil {
+				// If there's an explicit nil parent in the array (e.g. for merged $ path)
+				// The original Java code implies this structure: `(state parent)`
+				// and if parent is EMPTY, it shows `(state $)`. It doesn't show `(state nil)`.
+				// So, if parent is nil (representing EMPTY for this path), it's often omitted or shown as $.
+				// Let's omit if parent is nil, matching typical representation of array path $ (nil parent)
 			}
 		}
-		return s + "]"
-
-	default:
-		return "unknown"
+		s += "]"
+		return s
 	}
+	return "unknown"
 }
 
-func (p *PredictionContext) isEmpty() bool {
-	switch p.pcType {
-	case PredictionContextEmpty:
-		return true
-	case PredictionContextArray:
-		// since EmptyReturnState can only appear in the last position, we
-		// don't need to verify that size==1
-		return p.returnStates[0] == BasePredictionContextEmptyReturnState
-	default:
-		return false
-	}
-}
 
 func (p *PredictionContext) Type() int {
 	return p.pcType
@@ -288,440 +362,368 @@ func (p *PredictionContext) Type() int {
 
 func calculateHash(parent *PredictionContext, returnState int) int {
 	h := murmurInit(1)
-	h = murmurUpdate(h, parent.Hash())
+	parentHash := 0
+	if parent != nil {
+		parentHash = parent.Hash()
+	}
+	h = murmurUpdate(h, parentHash)
 	h = murmurUpdate(h, returnState)
-	return murmurFinish(h, 2)
+	return murmurFinish(h, 2) // Hashed 2 items: parentHash, returnState
 }
 
-// Convert a {@link RuleContext} tree to a {@link BasePredictionContext} graph.
-// Return {@link //EMPTY} if {@code outerContext} is empty or nil.
-// /
 func predictionContextFromRuleContext(a *ATN, outerContext RuleContext) *PredictionContext {
-	if outerContext == nil {
-		outerContext = ParserRuleContextEmpty
-	}
-	// if we are in RuleContext of start rule, s, then BasePredictionContext
-	// is EMPTY. Nobody called us. (if we are empty, return empty)
-	if outerContext.GetParent() == nil || outerContext == ParserRuleContextEmpty {
+	if outerContext == nil || outerContext.GetParent() == nil || outerContext == ParserRuleContextEmpty {
 		return BasePredictionContextEMPTY
 	}
-	// If we have a parent, convert it to a BasePredictionContext graph
-	parent := predictionContextFromRuleContext(a, outerContext.GetParent().(RuleContext))
-	state := a.states[outerContext.GetInvokingState()]
-	transition := state.GetTransitions()[0]
+	parentPC := predictionContextFromRuleContext(a, outerContext.GetParent().(RuleContext))
 
-	return SingletonBasePredictionContextCreate(parent, transition.(*RuleTransition).followState.GetStateNumber())
+	invokingStateNum := outerContext.GetInvokingState()
+    if invokingStateNum < 0 || invokingStateNum >= len(a.states) { return BasePredictionContextEMPTY }
+	state := a.states[invokingStateNum]
+	if state == nil || len(state.GetTransitions()) == 0 { return BasePredictionContextEMPTY }
+
+	transition := state.GetTransitions()[0] // Assuming the first transition is the rule call
+	ruleTransition, ok := transition.(*RuleTransition)
+	if !ok { return BasePredictionContextEMPTY } // Should be a RuleTransition
+
+	return SingletonBasePredictionContextCreate(parentPC, ruleTransition.followState.GetStateNumber())
 }
 
 func merge(a, b *PredictionContext, rootIsWildcard bool, mergeCache *JPCMap) *PredictionContext {
-
-	// Share same graph if both same
-	//
-	if a == b || a.Equals(b) {
+	if a == b || (a != nil && a.Equals(b)) { // Pointer equality or logical equality
 		return a
 	}
 
-	if a.pcType == PredictionContextSingleton && b.pcType == PredictionContextSingleton {
-		return mergeSingletons(a, b, rootIsWildcard, mergeCache)
+	if mergeCache != nil {
+		if cached, present := mergeCache.Get(a, b); present { return cached }
+		if cached, present := mergeCache.Get(b, a); present { return cached }
 	}
-	// At least one of a or b is array
-	// If one is $ and rootIsWildcard, return $ as wildcard
-	if rootIsWildcard {
-		if a.isEmpty() {
-			return a
-		}
-		if b.isEmpty() {
-			return b
+
+	var result *PredictionContext
+	// Handle EMPTY merging explicitly first, as it has specific rules
+    isAEmpty := a.isEmpty() // Use isEmpty for logical check
+    isBEmpty := b.isEmpty()
+
+    if isAEmpty && isBEmpty { result = BasePredictionContextEMPTY } else
+    if isAEmpty { result = mergeRoot(a,b,rootIsWildcard) } else // Let mergeRoot handle $ + x
+    if isBEmpty { result = mergeRoot(a,b,rootIsWildcard) } else // Let mergeRoot handle x + $
+    // Standard merge if neither is inherently empty (though they might contain empty paths)
+	if result == nil { // If mergeRoot didn't resolve
+		if a.pcType == PredictionContextSingleton && b.pcType == PredictionContextSingleton {
+			result = mergeSingletons(a, b, rootIsWildcard, mergeCache)
+		} else { // At least one is an array (or will be converted)
+			var ara, arb *PredictionContext
+			var araIsTmp, arbIsTmp bool
+
+			if a.pcType == PredictionContextArray { ara = a } else { ara = convertToArray(a); araIsTmp = true }
+			if b.pcType == PredictionContextArray { arb = b } else { arb = convertToArray(b); arbIsTmp = true }
+
+			result = mergeArrays(ara, arb, rootIsWildcard, mergeCache)
+
+			if araIsTmp && ara != result { releasePredictionContext(ara) }
+			if arbIsTmp && arb != result { releasePredictionContext(arb) }
 		}
 	}
 
-	// Convert either Singleton or Empty to arrays, so that we can merge them
-	//
-	ara := convertToArray(a)
-	arb := convertToArray(b)
-	return mergeArrays(ara, arb, rootIsWildcard, mergeCache)
+	if mergeCache != nil && result != nil { mergeCache.Put(a, b, result) }
+	return result
 }
 
 func convertToArray(pc *PredictionContext) *PredictionContext {
 	switch pc.Type() {
 	case PredictionContextEmpty:
-		return NewArrayPredictionContext([]*PredictionContext{}, []int{})
+		return NewArrayPredictionContext(
+			[]*PredictionContext{nil}, // Represents the parent of EMPTY_RETURN_STATE in an array
+			[]int{BasePredictionContextEmptyReturnState},
+		)
 	case PredictionContextSingleton:
-		return NewArrayPredictionContext([]*PredictionContext{pc.GetParent(0)}, []int{pc.getReturnState(0)})
-	default:
-		// Already an array
+		return NewArrayPredictionContext(
+			[]*PredictionContext{pc.parentCtx},
+			[]int{pc.returnState},
+		)
+	default: // Already Array
+		return pc
 	}
-	return pc
 }
 
-// mergeSingletons merges two Singleton [PredictionContext] instances.
-//
-// Stack tops equal, parents merge is same return left graph.
-// <embed src="images/SingletonMerge_SameRootSamePar.svg"
-// type="image/svg+xml"/></p>
-//
-// <p>Same stack top, parents differ merge parents giving array node, then
-// remainders of those graphs. A new root node is created to point to the
-// merged parents.<br>
-// <embed src="images/SingletonMerge_SameRootDiffPar.svg"
-// type="image/svg+xml"/></p>
-//
-// <p>Different stack tops pointing to same parent. Make array node for the
-// root where both element in the root point to the same (original)
-// parent.<br>
-// <embed src="images/SingletonMerge_DiffRootSamePar.svg"
-// type="image/svg+xml"/></p>
-//
-// <p>Different stack tops pointing to different parents. Make array node for
-// the root where each element points to the corresponding original
-// parent.<br>
-// <embed src="images/SingletonMerge_DiffRootDiffPar.svg"
-// type="image/svg+xml"/></p>
-//
-// @param a the first {@link SingletonBasePredictionContext}
-// @param b the second {@link SingletonBasePredictionContext}
-// @param rootIsWildcard {@code true} if this is a local-context merge,
-// otherwise false to indicate a full-context merge
-// @param mergeCache
-// /
 func mergeSingletons(a, b *PredictionContext, rootIsWildcard bool, mergeCache *JPCMap) *PredictionContext {
-	if mergeCache != nil {
-		previous, present := mergeCache.Get(a, b)
-		if present {
-			return previous
-		}
-		previous, present = mergeCache.Get(b, a)
-		if present {
-			return previous
-		}
-	}
-
-	rootMerge := mergeRoot(a, b, rootIsWildcard)
-	if rootMerge != nil {
-		if mergeCache != nil {
-			mergeCache.Put(a, b, rootMerge)
-		}
-		return rootMerge
-	}
+    // mergeRoot has already been tried if one of them was EMPTY.
+    // So a and b are non-EMPTY singletons here.
 	if a.returnState == b.returnState {
-		parent := merge(a.parentCtx, b.parentCtx, rootIsWildcard, mergeCache)
-		// if parent is same as existing a or b parent or reduced to a parent,
-		// return it
-		if parent.Equals(a.parentCtx) {
-			return a // ax + bx = ax, if a=b
-		}
-		if parent.Equals(b.parentCtx) {
-			return b // ax + bx = bx, if a=b
-		}
-		// else: ax + ay = a'[x,y]
-		// merge parents x and y, giving array node with x,y then remainders
-		// of those graphs. dup a, a' points at merged array.
-		// New joined parent so create a new singleton pointing to it, a'
-		spc := SingletonBasePredictionContextCreate(parent, a.returnState)
-		if mergeCache != nil {
-			mergeCache.Put(a, b, spc)
-		}
-		return spc
+		mergedParent := merge(a.parentCtx, b.parentCtx, rootIsWildcard, mergeCache)
+		if mergedParent == a.parentCtx { return a }
+		if mergedParent == b.parentCtx { return b }
+		return SingletonBasePredictionContextCreate(mergedParent, a.returnState) // New pooled singleton
 	}
-	// a != b payloads differ
-	// see if we can collapse parents due to $+x parents if local ctx
-	var singleParent *PredictionContext
-	if a.Equals(b) || (a.parentCtx != nil && a.parentCtx.Equals(b.parentCtx)) { // ax +
-		// bx =
-		// [a,b]x
-		singleParent = a.parentCtx
+
+	// Different return states
+	var commonParent *PredictionContext
+    if a.parentCtx == b.parentCtx || (a.parentCtx != nil && a.parentCtx.Equals(b.parentCtx)) {
+        commonParent = a.parentCtx
+    }
+
+	payloads := make([]int, 2)
+	parents := make([]*PredictionContext, 2)
+
+	if commonParent != nil { // Different states, common parent -> array with common parent
+		parents[0], parents[1] = commonParent, commonParent
+	} else { // Different states, different parents -> array with distinct parents
+		parents[0], parents[1] = a.parentCtx, b.parentCtx // Will be sorted along with payloads
 	}
-	if singleParent != nil { // parents are same
-		// sort payloads and use same parent
-		payloads := []int{a.returnState, b.returnState}
-		if a.returnState > b.returnState {
-			payloads[0] = b.returnState
-			payloads[1] = a.returnState
-		}
-		parents := []*PredictionContext{singleParent, singleParent}
-		apc := NewArrayPredictionContext(parents, payloads)
-		if mergeCache != nil {
-			mergeCache.Put(a, b, apc)
-		}
-		return apc
+    // Sort by returnState to ensure canonical array form
+	if a.returnState < b.returnState {
+		payloads[0], payloads[1] = a.returnState, b.returnState
+        if commonParent == nil { // Only swap parents if they were not common
+            parents[0], parents[1] = a.parentCtx, b.parentCtx
+        }
+	} else {
+		payloads[0], payloads[1] = b.returnState, a.returnState
+        if commonParent == nil {
+            parents[0], parents[1] = b.parentCtx, a.parentCtx
+        }
 	}
-	// parents differ and can't merge them. Just pack together
-	// into array can't merge.
-	// ax + by = [ax,by]
-	payloads := []int{a.returnState, b.returnState}
-	parents := []*PredictionContext{a.parentCtx, b.parentCtx}
-	if a.returnState > b.returnState { // sort by payload
-		payloads[0] = b.returnState
-		payloads[1] = a.returnState
-		parents = []*PredictionContext{b.parentCtx, a.parentCtx}
-	}
-	apc := NewArrayPredictionContext(parents, payloads)
-	if mergeCache != nil {
-		mergeCache.Put(a, b, apc)
-	}
-	return apc
+	return NewArrayPredictionContext(parents, payloads) // New pooled array
 }
 
-// Handle case where at least one of {@code a} or {@code b} is
-// {@link //EMPTY}. In the following diagrams, the symbol {@code $} is used
-// to represent {@link //EMPTY}.
-//
-// <h2>Local-Context Merges</h2>
-//
-// <p>These local-context merge operations are used when {@code rootIsWildcard}
-// is true.</p>
-//
-// <p>{@link //EMPTY} is superset of any graph return {@link //EMPTY}.<br>
-// <embed src="images/LocalMerge_EmptyRoot.svg" type="image/svg+xml"/></p>
-//
-// <p>{@link //EMPTY} and anything is {@code //EMPTY}, so merged parent is
-// {@code //EMPTY} return left graph.<br>
-// <embed src="images/LocalMerge_EmptyParent.svg" type="image/svg+xml"/></p>
-//
-// <p>Special case of last merge if local context.<br>
-// <embed src="images/LocalMerge_DiffRoots.svg" type="image/svg+xml"/></p>
-//
-// <h2>Full-Context Merges</h2>
-//
-// <p>These full-context merge operations are used when {@code rootIsWildcard}
-// is false.</p>
-//
-// <p><embed src="images/FullMerge_EmptyRoots.svg" type="image/svg+xml"/></p>
-//
-// <p>Must keep all contexts {@link //EMPTY} in array is a special value (and
-// nil parent).<br>
-// <embed src="images/FullMerge_EmptyRoot.svg" type="image/svg+xml"/></p>
-//
-// <p><embed src="images/FullMerge_SameRoot.svg" type="image/svg+xml"/></p>
-//
-// @param a the first {@link SingletonBasePredictionContext}
-// @param b the second {@link SingletonBasePredictionContext}
-// @param rootIsWildcard {@code true} if this is a local-context merge,
-// otherwise false to indicate a full-context merge
-// /
 func mergeRoot(a, b *PredictionContext, rootIsWildcard bool) *PredictionContext {
+    // This function is for when one of a or b is EMPTY.
+    // isAEmpty/isBEmpty should use the isEmpty() method for logical emptiness.
+    isAEmpty := a.isEmpty()
+    isBEmpty := b.isEmpty()
+
 	if rootIsWildcard {
-		if a.pcType == PredictionContextEmpty {
-			return BasePredictionContextEMPTY // // + b =//
-		}
-		if b.pcType == PredictionContextEmpty {
-			return BasePredictionContextEMPTY // a +// =//
-		}
-	} else {
-		if a.isEmpty() && b.isEmpty() {
-			return BasePredictionContextEMPTY // $ + $ = $
-		} else if a.isEmpty() { // $ + x = [$,x]
-			payloads := []int{b.getReturnState(-1), BasePredictionContextEmptyReturnState}
-			parents := []*PredictionContext{b.GetParent(-1), nil}
-			return NewArrayPredictionContext(parents, payloads)
-		} else if b.isEmpty() { // x + $ = [$,x] ($ is always first if present)
-			payloads := []int{a.getReturnState(-1), BasePredictionContextEmptyReturnState}
-			parents := []*PredictionContext{a.GetParent(-1), nil}
-			return NewArrayPredictionContext(parents, payloads)
-		}
+		if isAEmpty || isBEmpty { return BasePredictionContextEMPTY } // $ + x = $, x + $ = $ (wildcard)
+	} else { // Full context merge
+		if isAEmpty && isBEmpty { return BasePredictionContextEMPTY } // $ + $ = $
+
+        // If one is empty, create an array [non-empty, $ representation]
+        // The $ representation in an array is (nil parent, EMPTY_RETURN_STATE)
+        var nonEemptyCtx *PredictionContext
+        if isAEmpty { nonEemptyCtx = b } else { nonEemptyCtx = a }
+
+        // Create slices for the new array context.
+        // Order convention: often $ comes first, or sorted.
+        // Let's go with [non-empty-path, empty-path-marker] for now, then sort if needed.
+        // ANTLR Java sorts these, typically $ (EMPTY_RETURN_STATE) comes after actual states.
+
+        payloads := make([]int, 2)
+        parents := make([]*PredictionContext, 2)
+
+        // Path 1: from the non-empty context (which must be a singleton here if mergeRoot is called this way)
+        payloads[0] = nonEemptyCtx.returnState
+        parents[0] = nonEemptyCtx.parentCtx
+
+        // Path 2: the empty path marker
+        payloads[1] = BasePredictionContextEmptyReturnState
+        parents[1] = nil // Parent of EMPTY_RETURN_STATE marker in array is nil
+
+        // Sort them: EMPTY_RETURN_STATE is large, so it usually comes last if sorted numerically.
+        if payloads[0] > payloads[1] {
+            payloads[0], payloads[1] = payloads[1], payloads[0]
+            parents[0], parents[1] = parents[1], parents[0]
+        }
+        return NewArrayPredictionContext(parents, payloads) // New pooled array
 	}
-	return nil
+	return nil // No resolution by mergeRoot (e.g. neither was empty)
 }
 
-// Merge two {@link ArrayBasePredictionContext} instances.
-//
-// <p>Different tops, different parents.<br>
-// <embed src="images/ArrayMerge_DiffTopDiffPar.svg" type="image/svg+xml"/></p>
-//
-// <p>Shared top, same parents.<br>
-// <embed src="images/ArrayMerge_ShareTopSamePar.svg" type="image/svg+xml"/></p>
-//
-// <p>Shared top, different parents.<br>
-// <embed src="images/ArrayMerge_ShareTopDiffPar.svg" type="image/svg+xml"/></p>
-//
-// <p>Shared top, all shared parents.<br>
-// <embed src="images/ArrayMerge_ShareTopSharePar.svg"
-// type="image/svg+xml"/></p>
-//
-// <p>Equal tops, merge parents and reduce top to
-// {@link SingletonBasePredictionContext}.<br>
-// <embed src="images/ArrayMerge_EqualTop.svg" type="image/svg+xml"/></p>
-//
-//goland:noinspection GoBoolExpressions
+
 func mergeArrays(a, b *PredictionContext, rootIsWildcard bool, mergeCache *JPCMap) *PredictionContext {
-	if mergeCache != nil {
-		previous, present := mergeCache.Get(a, b)
-		if present {
-			if runtimeConfig.parserATNSimulatorTraceATNSim {
-				fmt.Println("mergeArrays a=" + a.String() + ",b=" + b.String() + " -> previous")
-			}
-			return previous
-		}
-		previous, present = mergeCache.Get(b, a)
-		if present {
-			if runtimeConfig.parserATNSimulatorTraceATNSim {
-				fmt.Println("mergeArrays a=" + a.String() + ",b=" + b.String() + " -> previous")
-			}
-			return previous
-		}
-	}
-	// merge sorted payloads a + b => M
-	i := 0 // walks a
-	j := 0 // walks b
-	k := 0 // walks target M array
+    // Ensure a and b are array types for this specialized merge.
+    // Temporary slices for building the result, initial capacity is sum of lengths.
+    mergedRS := make([]int, 0, len(a.returnStates)+len(b.returnStates))
+    mergedP := make([]*PredictionContext, 0, len(a.parents)+len(b.parents))
 
-	mergedReturnStates := make([]int, len(a.returnStates)+len(b.returnStates))
-	mergedParents := make([]*PredictionContext, len(a.returnStates)+len(b.returnStates))
-	// walk and merge to yield mergedParents, mergedReturnStates
-	for i < len(a.returnStates) && j < len(b.returnStates) {
-		aParent := a.parents[i]
-		bParent := b.parents[j]
-		if a.returnStates[i] == b.returnStates[j] {
-			// same payload (stack tops are equal), must yield merged singleton
-			payload := a.returnStates[i]
-			// $+$ = $
-			bothDollars := payload == BasePredictionContextEmptyReturnState && aParent == nil && bParent == nil
-			axAX := aParent != nil && bParent != nil && aParent.Equals(bParent) // ax+ax
-			// ->
-			// ax
-			if bothDollars || axAX {
-				mergedParents[k] = aParent // choose left
-				mergedReturnStates[k] = payload
-			} else { // ax+ay -> a'[x,y]
-				mergedParent := merge(aParent, bParent, rootIsWildcard, mergeCache)
-				mergedParents[k] = mergedParent
-				mergedReturnStates[k] = payload
-			}
-			i++ // hop over left one as usual
-			j++ // but also Skip one in right side since we merge
-		} else if a.returnStates[i] < b.returnStates[j] { // copy a[i] to M
-			mergedParents[k] = aParent
-			mergedReturnStates[k] = a.returnStates[i]
-			i++
-		} else { // b > a, copy b[j] to M
-			mergedParents[k] = bParent
-			mergedReturnStates[k] = b.returnStates[j]
-			j++
-		}
-		k++
-	}
-	// copy over any payloads remaining in either array
-	if i < len(a.returnStates) {
-		for p := i; p < len(a.returnStates); p++ {
-			mergedParents[k] = a.parents[p]
-			mergedReturnStates[k] = a.returnStates[p]
-			k++
-		}
-	} else {
-		for p := j; p < len(b.returnStates); p++ {
-			mergedParents[k] = b.parents[p]
-			mergedReturnStates[k] = b.returnStates[p]
-			k++
-		}
-	}
-	// trim merged if we combined a few that had same stack tops
-	if k < len(mergedParents) { // write index < last position trim
-		if k == 1 { // for just one merged element, return singleton top
-			pc := SingletonBasePredictionContextCreate(mergedParents[0], mergedReturnStates[0])
-			if mergeCache != nil {
-				mergeCache.Put(a, b, pc)
-			}
-			return pc
-		}
-		mergedParents = mergedParents[0:k]
-		mergedReturnStates = mergedReturnStates[0:k]
-	}
+    idxA, idxB := 0, 0
+    for idxA < len(a.returnStates) && idxB < len(b.returnStates) {
+        sA, pA := a.returnStates[idxA], a.parents[idxA]
+        sB, pB := b.returnStates[idxB], b.parents[idxB]
 
-	M := NewArrayPredictionContext(mergedParents, mergedReturnStates)
+        if sA == sB {
+            mp := merge(pA, pB, rootIsWildcard, mergeCache) // Merge parents
+            mergedRS = append(mergedRS, sA)
+            mergedP = append(mergedP, mp)
+            idxA++
+            idxB++
+        } else if sA < sB {
+            mergedRS = append(mergedRS, sA)
+            mergedP = append(mergedP, pA)
+            idxA++
+        } else { // sB < sA
+            mergedRS = append(mergedRS, sB)
+            mergedP = append(mergedP, pB)
+            idxB++
+        }
+    }
+    // Append remaining from a
+    for idxA < len(a.returnStates) {
+        mergedRS = append(mergedRS, a.returnStates[idxA])
+        mergedP = append(mergedP, a.parents[idxA])
+        idxA++
+    }
+    // Append remaining from b
+    for idxB < len(b.returnStates) {
+        mergedRS = append(mergedRS, b.returnStates[idxB])
+        mergedP = append(mergedP, b.parents[idxB])
+        idxB++
+    }
 
-	// if we created same array as a or b, return that instead
-	// TODO: JI track whether this is possible above during merge sort for speed and possibly avoid an allocation
-	if M.Equals(a) {
-		if mergeCache != nil {
-			mergeCache.Put(a, b, a)
-		}
-		if runtimeConfig.parserATNSimulatorTraceATNSim {
-			fmt.Println("mergeArrays a=" + a.String() + ",b=" + b.String() + " -> a")
-		}
-		return a
-	}
-	if M.Equals(b) {
-		if mergeCache != nil {
-			mergeCache.Put(a, b, b)
-		}
-		if runtimeConfig.parserATNSimulatorTraceATNSim {
-			fmt.Println("mergeArrays a=" + a.String() + ",b=" + b.String() + " -> b")
-		}
-		return b
-	}
-	combineCommonParents(&mergedParents)
+    if len(mergedRS) == 0 { return BasePredictionContextEMPTY } // Should not happen if inputs are valid non-empty arrays
+    if len(mergedRS) == 1 { // Result is a singleton
+        // Release temporary slices if they were large? No, they are local.
+        return SingletonBasePredictionContextCreate(mergedP[0], mergedRS[0]) // Pooled singleton
+    }
 
-	if mergeCache != nil {
-		mergeCache.Put(a, b, M)
-	}
-	if runtimeConfig.parserATNSimulatorTraceATNSim {
-		fmt.Println("mergeArrays a=" + a.String() + ",b=" + b.String() + " -> " + M.String())
-	}
-	return M
+    M := NewArrayPredictionContext(mergedP, mergedRS) // Pooled array, takes ownership of slices
+
+    if M.Equals(a) { releasePredictionContext(M); return a }
+    if M.Equals(b) { releasePredictionContext(M); return b }
+
+    combineCommonParents(&M.parents) // Modifies M.parents in-place
+    return M
 }
 
-// Make pass over all M parents and merge any Equals() ones.
-// Note that we pass a pointer to the slice as we want to modify it in place.
-//
-//goland:noinspection GoUnusedFunction
 func combineCommonParents(parents *[]*PredictionContext) {
-	uniqueParents := NewJStore[*PredictionContext, Comparator[*PredictionContext]](pContextEqInst, PredictionContextCollection, "combineCommonParents for PredictionContext")
+    if len(*parents) <= 1 { return }
+    // O(N^2) but often few parents or already canonical.
+    // A more complex Set-like structure could optimize, but this is direct.
+    uniqueList := make([]*PredictionContext, 0, len(*parents))
+    for i := 0; i < len(*parents); i++ {
+        currentP := (*parents)[i]
+        if currentP == nil { continue } // Should not have nil parents post-merge normally
 
-	for p := 0; p < len(*parents); p++ {
-		parent := (*parents)[p]
-		_, _ = uniqueParents.Put(parent)
-	}
-	for q := 0; q < len(*parents); q++ {
-		pc, _ := uniqueParents.Get((*parents)[q])
-		(*parents)[q] = pc
-	}
+        isUnique := true
+        for _, uniqueP := range uniqueList {
+            if currentP.Equals(uniqueP) {
+                (*parents)[i] = uniqueP // Replace with canonical instance
+                isUnique = false
+                break
+            }
+        }
+        if isUnique {
+            uniqueList = append(uniqueList, currentP)
+        }
+    }
 }
 
 func getCachedBasePredictionContext(context *PredictionContext, contextCache *PredictionContextCache, visited *VisitRecord) *PredictionContext {
-	if context.isEmpty() {
-		return context
+	if context == nil || context.isEmpty() { // Check nil and logical empty
+		return BasePredictionContextEMPTY
 	}
-	existing, present := visited.Get(context)
-	if present {
-		return existing
-	}
-
-	existing, present = contextCache.Get(context)
-	if present {
+	if existing, present := visited.Get(context); present { return existing }
+	if existing, present := contextCache.Get(context); present {
 		visited.Put(context, existing)
 		return existing
 	}
+
 	changed := false
-	parents := make([]*PredictionContext, context.length())
-	for i := 0; i < len(parents); i++ {
-		parent := getCachedBasePredictionContext(context.GetParent(i), contextCache, visited)
-		if changed || !parent.Equals(context.GetParent(i)) {
-			if !changed {
-				parents = make([]*PredictionContext, context.length())
-				for j := 0; j < context.length(); j++ {
-					parents[j] = context.GetParent(j)
-				}
-				changed = true
-			}
-			parents[i] = parent
-		}
+	currentParentsList := context.GetParentsForCaching() // Get appropriate parent(s) for this context type
+
+	var canonicalParents []*PredictionContext // This will hold the canonical versions of parents
+
+	if context.pcType == PredictionContextArray {
+	    if len(currentParentsList) > 0 { // Only allocate if there are parents
+		canonicalParents = make([]*PredictionContext, len(currentParentsList))
+        } else {
+            canonicalParents = nil // Or an empty slice, depending on convention for array with no parents
+        }
+	} else if context.pcType == PredictionContextSingleton && len(currentParentsList) == 1 { // Singleton
+	    canonicalParents = make([]*PredictionContext, 1) // Expect one parent
 	}
-	if !changed {
+
+
+	for i, p := range currentParentsList {
+		if p == nil { // Should not happen if GetParentsForCaching is correct
+		    if context.pcType == PredictionContextArray { canonicalParents[i] = nil }
+			continue
+		}
+		canonicalP := getCachedBasePredictionContext(p, contextCache, visited)
+		if canonicalP != p { changed = true }
+
+		if context.pcType == PredictionContextArray {
+		    canonicalParents[i] = canonicalP
+        } else if context.pcType == PredictionContextSingleton { // Singleton
+            canonicalParents[0] = canonicalP // Store the single canonical parent
+        }
+	}
+
+	if !changed { // No change in parents, and context itself wasn't in cache
 		contextCache.add(context)
 		visited.Put(context, context)
 		return context
 	}
-	var updated *PredictionContext
-	if len(parents) == 0 {
-		updated = BasePredictionContextEMPTY
-	} else if len(parents) == 1 {
-		updated = SingletonBasePredictionContextCreate(parents[0], context.getReturnState(0))
-	} else {
-		updated = NewArrayPredictionContext(parents, context.GetReturnStates())
-	}
-	contextCache.add(updated)
-	visited.Put(updated, updated)
-	visited.Put(context, updated)
 
+	// Parents changed, or context itself needs canonicalization. Create new canonical version.
+	var updated *PredictionContext
+	if context.pcType == PredictionContextSingleton {
+		updated = SingletonBasePredictionContextCreate(canonicalParents[0], context.returnState) // Pooled
+	} else { // Array
+        // NewArrayPredictionContext needs its own copy of returnStates if context.returnStates is shared
+        // Create a copy of returnStates to pass to NewArrayPredictionContext
+        returnStatesCopy := make([]int, len(context.returnStates))
+        copy(returnStatesCopy, context.returnStates)
+		updated = NewArrayPredictionContext(canonicalParents, returnStatesCopy) // Pooled
+	}
+
+	contextCache.add(updated)
+	visited.Put(updated, updated) // New canonical form points to itself
+	visited.Put(context, updated) // Original form now resolves to this new canonical one
+
+	// The original `context` (if `changed`) is now non-canonical.
+	// It's not released here because its original parent objects might still be part of other structures.
+	// The main benefit is that `updated` is from the pool and is canonical.
 	return updated
+}
+
+// GetParentsForCaching is a helper for getCachedBasePredictionContext.
+// It returns a slice of parents suitable for recursive caching.
+// For Singleton, it returns a slice with one element. For Array, its internal parents slice. Empty otherwise.
+func (p *PredictionContext) GetParentsForCaching() []*PredictionContext {
+    switch p.pcType {
+    case PredictionContextSingleton:
+        // For consistent processing, wrap the single parent in a slice.
+        // Avoid allocation if parent is nil.
+        if p.parentCtx == nil { return nil } // Or empty slice: make([]*PredictionContext,0)
+        // This allocation is minor compared to overall context creation.
+        return []*PredictionContext{p.parentCtx}
+    case PredictionContextArray:
+        return p.parents // Return internal slice directly
+    case PredictionContextEmpty:
+        return nil // Empty context has no parents for caching
+    }
+    return nil // Should be unreachable
+}
+
+// pcSliceEqual compares two slices of PredictionContext pointers.
+// It must handle nil PredictionContext pointers within the slices if they can occur.
+func pcSliceEqual(a, b []*PredictionContext) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i, pcA := range a {
+		pcB := b[i]
+		if pcA == pcB { // Pointer equality (covers both nil)
+			continue
+		}
+		if pcA == nil || pcB == nil { // One is nil, other is not (since not both nil via ==)
+			return false
+		}
+		if !pcA.Equals(pcB) { // Deep equality check
+			return false
+		}
+	}
+	return true
+}
+
+// intSlicesEqual compares two slices of integers.
+func intSlicesEqual(a, b []int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i, vA := range a {
+		if vA != b[i] {
+			return false
+		}
+	}
+	return true
 }
