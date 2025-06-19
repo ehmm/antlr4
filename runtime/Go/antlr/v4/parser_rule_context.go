@@ -7,6 +7,7 @@ package antlr
 import (
 	"reflect"
 	"strconv"
+	"sync"
 )
 
 type ParserRuleContext interface {
@@ -40,9 +41,39 @@ type BaseParserRuleContext struct {
 	children    []Tree
 }
 
+var baseParserRuleContextPool = sync.Pool{
+	New: func() interface{} {
+		// Pre-allocate children slice? For now, no. Let Reset handle it.
+		return new(BaseParserRuleContext)
+	},
+}
+
+// Reset reinitializes a BaseParserRuleContext to its default state.
+func (prc *BaseParserRuleContext) Reset() {
+	prc.parentCtx = nil
+	prc.invokingState = -1
+	prc.RuleIndex = -1
+	prc.start = nil
+	prc.stop = nil
+	prc.exception = nil
+	// Important: If children slice had capacity, setting to nil releases the old array for GC.
+	// New slices will be made on demand by AddChild/AddTokenNode.
+	prc.children = nil
+}
+
 func NewBaseParserRuleContext(parent ParserRuleContext, invokingStateNumber int) *BaseParserRuleContext {
-	prc := new(BaseParserRuleContext)
-	InitBaseParserRuleContext(prc, parent, invokingStateNumber)
+	prc := baseParserRuleContextPool.Get().(*BaseParserRuleContext)
+	prc.Reset() // Start with a clean slate
+
+	// Set specific initial values based on parameters
+	prc.parentCtx = parent
+	if parent == nil {
+		prc.invokingState = -1
+	} else {
+		prc.invokingState = invokingStateNumber
+	}
+	// RuleIndex is typically set by generated parser code after creation or by InterpreterRuleContext.
+	// start, stop, exception, children are set during parsing lifecycle.
 	return prc
 }
 

@@ -7,6 +7,7 @@ package antlr
 import (
 	"strconv"
 	"strings"
+	"sync"
 )
 
 type TokenSourceCharStreamPair struct {
@@ -165,24 +166,42 @@ type CommonToken struct {
 	BaseToken
 }
 
+var commonTokenPool = sync.Pool{
+	New: func() interface{} {
+		return new(CommonToken)
+	},
+}
+
+func (t *CommonToken) Reset() {
+	t.source = nil
+	t.tokenType = TokenInvalidType
+	t.channel = TokenDefaultChannel
+	t.start = -1
+	t.stop = -1
+	t.tokenIndex = -1
+	t.line = -1
+	t.column = -1
+	t.text = ""
+	t.readOnly = false
+}
+
 func NewCommonToken(source *TokenSourceCharStreamPair, tokenType, channel, start, stop int) *CommonToken {
+	t := commonTokenPool.Get().(*CommonToken)
+	t.Reset() // Ensure a clean state
 
-	t := &CommonToken{
-		BaseToken: BaseToken{
-			source:     source,
-			tokenType:  tokenType,
-			channel:    channel,
-			start:      start,
-			stop:       stop,
-			tokenIndex: -1,
-		},
-	}
+	t.source = source
+	t.tokenType = tokenType
+	t.channel = channel
+	t.start = start
+	t.stop = stop
+	// t.tokenIndex is already -1 from Reset()
 
-	if t.source.tokenSource != nil {
+	if source != nil && source.tokenSource != nil {
 		t.line = source.tokenSource.GetLine()
 		t.column = source.tokenSource.GetCharPositionInLine()
 	} else {
-		t.column = -1
+		// t.line is -1 from Reset()
+		t.column = -1 // Explicitly set column if source or tokenSource is nil
 	}
 	return t
 }
@@ -204,10 +223,26 @@ func NewCommonToken(source *TokenSourceCharStreamPair, tokenType, channel, start
 //
 // @param oldToken The token to copy.
 func (c *CommonToken) clone() *CommonToken {
-	t := NewCommonToken(c.source, c.tokenType, c.channel, c.start, c.stop)
-	t.tokenIndex = c.GetTokenIndex()
-	t.line = c.GetLine()
-	t.column = c.GetColumn()
-	t.text = c.GetText()
+	// Instead of NewCommonToken to avoid double reset and specific field setting logic,
+	// get from pool and manually copy.
+	t := commonTokenPool.Get().(*CommonToken)
+	t.Reset() // Ensure clean state before copying
+
+	t.source = c.source // This is a pointer, so it's shared. This is existing behavior.
+	t.tokenType = c.tokenType
+	t.channel = c.channel
+	t.start = c.start
+	t.stop = c.stop
+	t.tokenIndex = c.tokenIndex // Use GetTokenIndex() if there's logic there
+	t.line = c.line             // Use GetLine() if there's logic there
+	t.column = c.column         // Use GetColumn() if there's logic there
+	t.text = c.text             // Use GetText() if there's logic there (e.g., lazy loading)
+	// Note: GetText() on BaseToken can compute text from input stream if t.text is empty.
+	// If c.text was empty, c.GetText() would have fetched it.
+	// We directly copy c.text to preserve if it was explicitly set or already fetched.
+	// If c.text is empty and we want the cloned token to also fetch lazily, this is fine.
+	// If c.text was fetched by c.GetText() and we want the clone to have it pre-filled, this is also fine.
+	t.readOnly = c.readOnly
+
 	return t
 }

@@ -6,6 +6,7 @@ package antlr
 
 import (
 	"fmt"
+	"sync"
 )
 
 // PredPrediction maps a predicate to a predicted alternative.
@@ -14,8 +15,23 @@ type PredPrediction struct {
 	pred SemanticContext
 }
 
+var predPredictionPool = sync.Pool{
+	New: func() interface{} {
+		return new(PredPrediction)
+	},
+}
+
+func (p *PredPrediction) Reset() {
+	p.alt = 0 // Typically set by NewPredPrediction
+	p.pred = nil // Typically set by NewPredPrediction (SemanticContextNone could be an alternative if meaningful)
+}
+
 func NewPredPrediction(pred SemanticContext, alt int) *PredPrediction {
-	return &PredPrediction{alt: alt, pred: pred}
+	pp := predPredictionPool.Get().(*PredPrediction)
+	pp.Reset()
+	pp.alt = alt
+	pp.pred = pred
+	return pp
 }
 
 func (p *PredPrediction) String() string {
@@ -82,12 +98,38 @@ type DFAState struct {
 	predicates []*PredPrediction
 }
 
-func NewDFAState(stateNumber int, configs *ATNConfigSet) *DFAState {
-	if configs == nil {
-		configs = NewATNConfigSet(false)
-	}
+var dfaStatePool = sync.Pool{
+	New: func() interface{} {
+		return new(DFAState)
+	},
+}
 
-	return &DFAState{configs: configs, stateNumber: stateNumber}
+func (d *DFAState) Reset() {
+	d.stateNumber = 0 // Or -1, but typically set by NewDFAState
+	d.configs = nil     // Will be set by NewDFAState
+	d.edges = nil       // Clears the slice, releases underlying array if no other refs
+	d.isAcceptState = false
+	d.prediction = ATNInvalidAltNumber // Use the defined invalid alt number
+	d.lexerActionExecutor = nil
+	d.requiresFullContext = false
+	d.predicates = nil // Clears the slice
+}
+
+func NewDFAState(stateNumber int, configs *ATNConfigSet) *DFAState {
+	d := dfaStatePool.Get().(*DFAState)
+	d.Reset()
+
+	d.stateNumber = stateNumber
+	if configs == nil {
+		// TODO: ATNConfigSet itself could be pooled if it's frequently created here.
+		// For now, stick to the original logic of creating a new one if nil.
+		d.configs = NewATNConfigSet(false)
+	} else {
+		d.configs = configs
+	}
+	// Other fields (edges, isAcceptState, etc.) are initialized by Reset
+	// and set later during DFA construction/simulation.
+	return d
 }
 
 // GetAltSet gets the set of all alts mentioned by all ATN configurations in d.
