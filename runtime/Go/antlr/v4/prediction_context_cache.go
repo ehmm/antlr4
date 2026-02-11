@@ -28,10 +28,7 @@ func (p *PredictionContextCache) add(ctx *PredictionContext) *PredictionContext 
 	if present {
 		return existing
 	}
-	id := nextID(ctx)
-	contextLock.Lock()
-	idToContext[id] = ctx
-	contextLock.Unlock()
+	nextID(ctx)
 	p.cache.Put(ctx, ctx)
 	return ctx
 }

@@ -93,6 +93,12 @@ func (b *BitSet) add(value int) {
 	b.data[idx] |= maskForBit(value)
 }
 
+func (b *BitSet) ClearAll() {
+	for i := range b.data {
+		b.data[i] = 0
+	}
+}
+
 func (b *BitSet) clear(index int) {
 	idx := indexForBit(index)
 	if idx >= len(b.data) {

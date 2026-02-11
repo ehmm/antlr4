@@ -37,6 +37,7 @@ type ContextID uint32
 const (
 	NoneContextID               ContextID = 0
 	InitialContextStoreCapacity           = 1000
+	BridgeCacheSize                       = 65536
 )
 
 type ContextData struct {
@@ -49,11 +50,11 @@ type ContextData struct {
 var (
 	BasePredictionContextEMPTY *PredictionContext
 	nextContextID              ContextID
-	idToContext                []*PredictionContext
 	idToContextData            []ContextData
 	arrayParents               []ContextID
 	arrayReturnStates          []int32
 	contextLock                RWMutex
+	bridgeCache                [BridgeCacheSize]*PredictionContext
 )
 
 func init() {
@@ -64,7 +65,6 @@ func init() {
 		returnState: BasePredictionContextEmptyReturnState,
 	}
 	nextContextID = 2
-	idToContext = []*PredictionContext{nil, BasePredictionContextEMPTY}
 	idToContextData = []ContextData{
 		{}, // NoneContextID
 		{
@@ -139,18 +139,21 @@ func nextIDInternal(ctx *PredictionContext) ContextID {
 	}
 
 	idToContextData = append(idToContextData, data)
-	idToContext = append(idToContext, nil)
 	return id
 }
 
 func getContextByID(id ContextID) *PredictionContext {
 	contextLock.RLock()
-	defer contextLock.RUnlock()
 	if id == NoneContextID || int(id) >= len(idToContextData) {
+		contextLock.RUnlock()
 		return nil
 	}
-	if int(id) < len(idToContext) && idToContext[id] != nil {
-		return idToContext[id]
+	contextLock.RUnlock()
+
+	slot := id % BridgeCacheSize
+	cached := bridgeCache[slot]
+	if cached != nil && cached.id == id {
+		return cached
 	}
 
 	// Bridge: Reconstruct from value store
@@ -174,6 +177,7 @@ func getContextByID(id ContextID) *PredictionContext {
 		ctx.returnState = int(data.returnState)
 	}
 
+	bridgeCache[slot] = ctx
 	return ctx
 }
 

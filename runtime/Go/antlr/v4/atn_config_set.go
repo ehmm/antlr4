@@ -282,9 +282,17 @@ func (b *ATNConfigSet) Clear() {
 	if b.readOnly {
 		panic("set is read-only")
 	}
-	b.configs = make([]ATNConfig, 0)
+	b.configs = b.configs[:0]
 	b.cachedHash = -1
-	b.configLookup = make(map[int][]int)
+	for k := range b.configLookup {
+		delete(b.configLookup, k)
+	}
+	b.dipsIntoOuterContext = false
+	b.hasSemanticContext = false
+	b.uniqueAlt = 0
+	if b.conflictingAlts != nil {
+		b.conflictingAlts.ClearAll()
+	}
 }
 
 func (b *ATNConfigSet) Commit() {
