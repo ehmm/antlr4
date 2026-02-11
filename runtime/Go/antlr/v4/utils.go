@@ -379,3 +379,28 @@ func pcSliceEqual(s1, s2 []*PredictionContext) bool {
 	}
 	return true
 }
+
+func contextIDSliceEqual(s1, s2 []ContextID) bool {
+	if s1 == nil && s2 == nil {
+		return true
+	}
+	if s1 == nil || s2 == nil {
+		return false
+	}
+	if len(s1) == 0 && len(s2) == 0 {
+		return true
+	}
+	if len(s1) == 0 || len(s2) == 0 || len(s1) != len(s2) {
+		return false
+	}
+	// If the slices are using the same memory, then they are the same slice
+	if &s1[0] == &s2[0] {
+		return true
+	}
+	for i, v := range s1 {
+		if v != s2[i] {
+			return false
+		}
+	}
+	return true
+}

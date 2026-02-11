@@ -1,11 +1,5 @@
 package antlr
 
-var BasePredictionContextEMPTY = &PredictionContext{
-	cachedHash:  calculateEmptyHash(),
-	pcType:      PredictionContextEmpty,
-	returnState: BasePredictionContextEmptyReturnState,
-}
-
 // PredictionContextCache is Used to cache [PredictionContext] objects. It is used for the shared
 // context cash associated with contexts in DFA states. This cache
 // can be used for both lexers and parsers.
@@ -34,6 +28,7 @@ func (p *PredictionContextCache) add(ctx *PredictionContext) *PredictionContext 
 	if present {
 		return existing
 	}
+	nextID(ctx)
 	p.cache.Put(ctx, ctx)
 	return ctx
 }
