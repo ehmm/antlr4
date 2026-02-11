@@ -6,7 +6,9 @@ package antlr
 
 import (
 	"fmt"
+	"os"
 	"strconv"
+	"sync/atomic"
 )
 
 var _emptyPredictionContextHash int
@@ -35,13 +37,24 @@ const (
 type ContextID uint32
 
 const (
-	NoneContextID ContextID = 0
+	NoneContextID               ContextID = 0
+	InitialContextStoreCapacity           = 1000
 )
+
+type ContextData struct {
+	pcType      int8
+	parentID    ContextID // Singleton parent or Array offset
+	returnState int32     // Singleton return state or Array length
+	cachedHash  int32
+}
 
 var (
 	BasePredictionContextEMPTY *PredictionContext
 	nextContextID              ContextID
 	idToContext                []*PredictionContext
+	idToContextData            []ContextData
+	arrayParents               []ContextID
+	arrayReturnStates          []int32
 	contextLock                RWMutex
 )
 
@@ -54,28 +67,119 @@ func init() {
 	}
 	nextContextID = 2
 	idToContext = []*PredictionContext{nil, BasePredictionContextEMPTY}
+	idToContextData = []ContextData{
+		{}, // NoneContextID
+		{
+			pcType:      int8(PredictionContextEmpty),
+			returnState: int32(BasePredictionContextEmptyReturnState),
+			cachedHash:  int32(calculateEmptyHash()),
+		},
+	}
+	arrayParents = make([]ContextID, 0, InitialContextStoreCapacity)
+	arrayReturnStates = make([]int32, 0, InitialContextStoreCapacity)
 }
 
 func nextID(ctx *PredictionContext) ContextID {
+	if ctx == nil {
+		return NoneContextID
+	}
+	contextLock.Lock()
+	if ctx.id != NoneContextID {
+		id := ctx.id
+		contextLock.Unlock()
+		return id
+	}
+	contextLock.Unlock()
+
+	// Recursively ensure parents have IDs.
+	// We do this WITHOUT holding the lock to avoid deadlocks.
+	if ctx.pcType == PredictionContextArray {
+		for _, parent := range ctx.parents {
+			nextID(parent)
+		}
+	} else if ctx.parentCtx != nil {
+		nextID(ctx.parentCtx)
+	}
+
 	contextLock.Lock()
 	defer contextLock.Unlock()
+	// Re-check ID after re-taking lock
 	if ctx.id != NoneContextID {
 		return ctx.id
 	}
+
 	id := nextContextID
 	nextContextID++
 	ctx.id = id
-	idToContext = append(idToContext, ctx)
+
+	data := ContextData{
+		pcType:     int8(ctx.pcType),
+		cachedHash: int32(ctx.cachedHash),
+	}
+
+	if ctx.pcType == PredictionContextArray {
+		data.parentID = ContextID(len(arrayParents))
+		data.returnState = int32(len(ctx.returnStates))
+		// Update parentIDs from the now-assigned parent IDs
+		ctx.parentIDs = make([]ContextID, len(ctx.parents))
+		for i, p := range ctx.parents {
+			if p != nil {
+				ctx.parentIDs[i] = p.id
+			} else {
+				ctx.parentIDs[i] = NoneContextID
+			}
+		}
+		arrayParents = append(arrayParents, ctx.parentIDs...)
+		for _, rs := range ctx.returnStates {
+			arrayReturnStates = append(arrayReturnStates, int32(rs))
+		}
+	} else {
+		if ctx.parentCtx != nil {
+			ctx.parentID = ctx.parentCtx.id
+		} else {
+			ctx.parentID = NoneContextID
+		}
+		data.parentID = ctx.parentID
+		data.returnState = int32(ctx.returnState)
+	}
+
+	idToContextData = append(idToContextData, data)
+	idToContext = append(idToContext, nil)
 	return id
 }
 
 func getContextByID(id ContextID) *PredictionContext {
 	contextLock.RLock()
 	defer contextLock.RUnlock()
-	if id == NoneContextID || int(id) >= len(idToContext) {
+	if id == NoneContextID || int(id) >= len(idToContextData) {
 		return nil
 	}
-	return idToContext[id]
+	if int(id) < len(idToContext) && idToContext[id] != nil {
+		return idToContext[id]
+	}
+
+	// Bridge: Reconstruct from value store
+	data := idToContextData[id]
+	ctx := &PredictionContext{
+		id:         id,
+		pcType:     int(data.pcType),
+		cachedHash: int(data.cachedHash),
+	}
+
+	if ctx.pcType == PredictionContextArray {
+		length := int(data.returnState)
+		offset := int(data.parentID)
+		ctx.parentIDs = arrayParents[offset : offset+length]
+		ctx.returnStates = make([]int, length)
+		for i := 0; i < length; i++ {
+			ctx.returnStates[i] = int(arrayReturnStates[offset+i])
+		}
+	} else {
+		ctx.parentID = data.parentID
+		ctx.returnState = int(data.returnState)
+	}
+
+	return ctx
 }
 
 const (
