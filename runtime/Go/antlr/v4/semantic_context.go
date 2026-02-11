@@ -7,7 +7,189 @@ package antlr
 import (
 	"fmt"
 	"strconv"
+	"sync"
 )
+
+type SemanticContextID uint32
+
+const (
+	NoneSemanticContextID SemanticContextID = 0
+	SemanticContextTypeEmpty  int8          = 1
+	SemanticContextTypePred   int8          = 2
+	SemanticContextTypePreced int8          = 3
+	SemanticContextTypeAND    int8          = 4
+	SemanticContextTypeOR     int8          = 5
+)
+
+type SemanticContextData struct {
+	scType      int8
+	ruleIndex   int32
+	predIndex   int32
+	isDependent bool
+	opOffset    uint32
+	opCount     uint32
+}
+
+var (
+	nextSemanticIDValue SemanticContextID
+	semanticRegistry    []SemanticContextData
+	semanticOperands    []SemanticContextID
+	semanticLock        sync.RWMutex
+	semanticBridgeCache [65536]SemanticContext
+	SemanticContextNone SemanticContext
+)
+
+func init() {
+	nextSemanticIDValue = 1
+	semanticRegistry = make([]SemanticContextData, 1, 1000)
+	semanticOperands = make([]SemanticContextID, 0, 1000)
+	SemanticContextNone = NewPredicate(-1, -1, false)
+	nextSemanticID(SemanticContextNone)
+}
+
+func nextSemanticID(s SemanticContext) SemanticContextID {
+	if s == nil {
+		return NoneSemanticContextID
+	}
+	semanticLock.Lock()
+	defer semanticLock.Unlock()
+	return NextSemanticIDInternal(s)
+}
+
+func NextSemanticIDInternal(s SemanticContext) SemanticContextID {
+	if s == nil {
+		return NoneSemanticContextID
+	}
+
+	// Get current ID
+	var currentID SemanticContextID
+	switch t := s.(type) {
+	case *Predicate:
+		currentID = t.id
+	case *PrecedencePredicate:
+		currentID = t.id
+	case *AND:
+		currentID = t.id
+	case *OR:
+		currentID = t.id
+	}
+
+	if currentID != NoneSemanticContextID {
+		return currentID
+	}
+
+	// Recursively assign IDs to operands
+	switch t := s.(type) {
+	case *AND:
+		for _, op := range t.opnds {
+			NextSemanticIDInternal(op)
+		}
+	case *OR:
+		for _, op := range t.opnds {
+			NextSemanticIDInternal(op)
+		}
+	}
+
+	id := nextSemanticIDValue
+	nextSemanticIDValue++
+
+	data := SemanticContextData{}
+	switch t := s.(type) {
+	case *Predicate:
+		t.id = id
+		data.scType = SemanticContextTypePred
+		data.ruleIndex = int32(t.ruleIndex)
+		data.predIndex = int32(t.predIndex)
+		data.isDependent = t.isCtxDependent
+	case *PrecedencePredicate:
+		t.id = id
+		data.scType = SemanticContextTypePreced
+		data.predIndex = int32(t.precedence)
+	case *AND:
+		t.id = id
+		data.scType = SemanticContextTypeAND
+		data.opOffset = uint32(len(semanticOperands))
+		data.opCount = uint32(len(t.opnds))
+		for _, op := range t.opnds {
+			semanticOperands = append(semanticOperands, getSemanticID(op))
+		}
+	case *OR:
+		t.id = id
+		data.scType = SemanticContextTypeOR
+		data.opOffset = uint32(len(semanticOperands))
+		data.opCount = uint32(len(t.opnds))
+		for _, op := range t.opnds {
+			semanticOperands = append(semanticOperands, getSemanticID(op))
+		}
+	}
+
+	semanticRegistry = append(semanticRegistry, data)
+	return id
+}
+
+func getSemanticID(s SemanticContext) SemanticContextID {
+	if s == nil {
+		return NoneSemanticContextID
+	}
+	switch t := s.(type) {
+	case *Predicate:
+		return t.id
+	case *PrecedencePredicate:
+		return t.id
+	case *AND:
+		return t.id
+	case *OR:
+		return t.id
+	}
+	return NoneSemanticContextID
+}
+
+func getSemanticContextByID(id SemanticContextID) SemanticContext {
+	if id == NoneSemanticContextID {
+		return nil
+	}
+	semanticLock.RLock()
+	if int(id) >= len(semanticRegistry) {
+		semanticLock.RUnlock()
+		return nil
+	}
+	semanticLock.RUnlock()
+
+	slot := id % 65536
+	cached := semanticBridgeCache[slot]
+	if cached != nil && getSemanticID(cached) == id {
+		return cached
+	}
+
+	semanticLock.RLock()
+	data := semanticRegistry[id]
+	semanticLock.RUnlock()
+
+	var res SemanticContext
+	switch data.scType {
+	case SemanticContextTypePred:
+		res = NewPredicate(int(data.ruleIndex), int(data.predIndex), data.isDependent)
+		res.(*Predicate).id = id
+	case SemanticContextTypePreced:
+		res = NewPrecedencePredicate(int(data.predIndex))
+		res.(*PrecedencePredicate).id = id
+	case SemanticContextTypeAND:
+		ops := make([]SemanticContext, data.opCount)
+		for i := uint32(0); i < data.opCount; i++ {
+			ops[i] = getSemanticContextByID(semanticOperands[data.opOffset+i])
+		}
+		res = &AND{id: id, opnds: ops}
+	case SemanticContextTypeOR:
+		ops := make([]SemanticContext, data.opCount)
+		for i := uint32(0); i < data.opCount; i++ {
+			ops[i] = getSemanticContextByID(semanticOperands[data.opOffset+i])
+		}
+		res = &OR{id: id, opnds: ops}
+	}
+
+	semanticBridgeCache[slot] = res
+	return res
+}
 
 // SemanticContext is a tree structure used to record the semantic context in which
 //
@@ -60,6 +242,7 @@ func SemanticContextorContext(a, b SemanticContext) SemanticContext {
 }
 
 type Predicate struct {
+	id             SemanticContextID
 	ruleIndex      int
 	predIndex      int
 	isCtxDependent bool
@@ -76,8 +259,6 @@ func NewPredicate(ruleIndex, predIndex int, isCtxDependent bool) *Predicate {
 
 //The default {@link SemanticContext}, which is semantically equivalent to
 //a predicate of the form {@code {true}?}.
-
-var SemanticContextNone = NewPredicate(-1, -1, false)
 
 func (p *Predicate) evalPrecedence(_ Recognizer, _ RuleContext) SemanticContext {
 	return p
@@ -97,16 +278,23 @@ func (p *Predicate) evaluate(parser Recognizer, outerContext RuleContext) bool {
 func (p *Predicate) Equals(other Collectable[SemanticContext]) bool {
 	if p == other {
 		return true
-	} else if _, ok := other.(*Predicate); !ok {
-		return false
-	} else {
-		return p.ruleIndex == other.(*Predicate).ruleIndex &&
-			p.predIndex == other.(*Predicate).predIndex &&
-			p.isCtxDependent == other.(*Predicate).isCtxDependent
 	}
+	otherP, ok := other.(*Predicate)
+	if !ok {
+		return false
+	}
+	if p.id != NoneSemanticContextID && otherP.id != NoneSemanticContextID {
+		return p.id == otherP.id
+	}
+	return p.ruleIndex == otherP.ruleIndex &&
+		p.predIndex == otherP.predIndex &&
+		p.isCtxDependent == otherP.isCtxDependent
 }
 
 func (p *Predicate) Hash() int {
+	if p.id != NoneSemanticContextID {
+		return int(p.id)
+	}
 	h := murmurInit(0)
 	h = murmurUpdate(h, p.ruleIndex)
 	h = murmurUpdate(h, p.predIndex)
@@ -123,6 +311,7 @@ func (p *Predicate) String() string {
 }
 
 type PrecedencePredicate struct {
+	id         SemanticContextID
 	precedence int
 }
 
@@ -162,10 +351,17 @@ func (p *PrecedencePredicate) Equals(other Collectable[SemanticContext]) bool {
 		return true
 	}
 
-	return p.precedence == other.(*PrecedencePredicate).precedence
+	if p.id != NoneSemanticContextID && op.id != NoneSemanticContextID {
+		return p.id == op.id
+	}
+
+	return p.precedence == op.precedence
 }
 
 func (p *PrecedencePredicate) Hash() int {
+	if p.id != NoneSemanticContextID {
+		return int(p.id)
+	}
 	h := uint32(1)
 	h = 31*h + uint32(p.precedence)
 	return int(h)
@@ -192,6 +388,7 @@ func PrecedencePredicatefilterPrecedencePredicates(set *JStore[SemanticContext, 
 // is false.`
 
 type AND struct {
+	id    SemanticContextID
 	opnds []SemanticContext
 }
 
@@ -241,16 +438,22 @@ func (a *AND) Equals(other Collectable[SemanticContext]) bool {
 	if a == other {
 		return true
 	}
-	if _, ok := other.(*AND); !ok {
+	otherA, ok := other.(*AND)
+	if !ok {
 		return false
-	} else {
-		for i, v := range other.(*AND).opnds {
-			if !a.opnds[i].Equals(v) {
-				return false
-			}
-		}
-		return true
 	}
+	if a.id != NoneSemanticContextID && otherA.id != NoneSemanticContextID {
+		return a.id == otherA.id
+	}
+	if len(a.opnds) != len(otherA.opnds) {
+		return false
+	}
+	for i, v := range otherA.opnds {
+		if !a.opnds[i].Equals(v) {
+			return false
+		}
+	}
+	return true
 }
 
 // {@inheritDoc}
@@ -306,6 +509,9 @@ func (a *AND) evalPrecedence(parser Recognizer, outerContext RuleContext) Semant
 }
 
 func (a *AND) Hash() int {
+	if a.id != NoneSemanticContextID {
+		return int(a.id)
+	}
 	h := murmurInit(37) // Init with a value different from OR
 	for _, op := range a.opnds {
 		h = murmurUpdate(h, op.Hash())
@@ -314,6 +520,9 @@ func (a *AND) Hash() int {
 }
 
 func (o *OR) Hash() int {
+	if o.id != NoneSemanticContextID {
+		return int(o.id)
+	}
 	h := murmurInit(41) // Init with o value different from AND
 	for _, op := range o.opnds {
 		h = murmurUpdate(h, op.Hash())
@@ -341,6 +550,7 @@ func (a *AND) String() string {
 //
 
 type OR struct {
+	id    SemanticContextID
 	opnds []SemanticContext
 }
 
@@ -390,16 +600,23 @@ func NewOR(a, b SemanticContext) *OR {
 func (o *OR) Equals(other Collectable[SemanticContext]) bool {
 	if o == other {
 		return true
-	} else if _, ok := other.(*OR); !ok {
-		return false
-	} else {
-		for i, v := range other.(*OR).opnds {
-			if !o.opnds[i].Equals(v) {
-				return false
-			}
-		}
-		return true
 	}
+	otherO, ok := other.(*OR)
+	if !ok {
+		return false
+	}
+	if o.id != NoneSemanticContextID && otherO.id != NoneSemanticContextID {
+		return o.id == otherO.id
+	}
+	if len(o.opnds) != len(otherO.opnds) {
+		return false
+	}
+	for i, v := range otherO.opnds {
+		if !o.opnds[i].Equals(v) {
+			return false
+		}
+	}
+	return true
 }
 
 // <p>

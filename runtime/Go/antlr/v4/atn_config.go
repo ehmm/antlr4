@@ -23,6 +23,7 @@ type ATNConfig struct {
 	state                          ATNState
 	alt                            int
 	contextID                      ContextID
+	semanticContextID              SemanticContextID
 	context                        *PredictionContext
 	semanticContext                SemanticContext
 	reachesIntoOuterContext        int
@@ -124,7 +125,15 @@ func (a *ATNConfig) GetContext() *PredictionContext {
 
 // GetSemanticContext returns the semantic context associated with this configuration
 func (a *ATNConfig) GetSemanticContext() SemanticContext {
+	if a.semanticContextID != NoneSemanticContextID {
+		return getSemanticContextByID(a.semanticContextID)
+	}
 	return a.semanticContext
+}
+
+func (a *ATNConfig) SetSemanticContext(v SemanticContext) {
+	a.semanticContext = v
+	a.semanticContextID = NoneSemanticContextID
 }
 
 // GetReachesIntoOuterContext returns the count of references to an outer context from this configuration
@@ -170,22 +179,33 @@ func (a *ATNConfig) PEquals(o Collectable[*ATNConfig]) bool {
 		return false
 	}
 
-	var equal bool
-
-	if a.contextID != NoneContextID && other.contextID != NoneContextID {
-		equal = a.contextID == other.contextID
-	} else {
-		equal = a.GetContext().Equals(other.GetContext())
+	if a.state.GetStateNumber() != other.state.GetStateNumber() {
+		return false
 	}
 
-	var (
-		nums = a.state.GetStateNumber() == other.state.GetStateNumber()
-		alts = a.alt == other.alt
-		cons = a.semanticContext.Equals(other.semanticContext)
-		sups = a.precedenceFilterSuppressed == other.precedenceFilterSuppressed
-	)
+	if a.alt != other.alt {
+		return false
+	}
 
-	return nums && alts && cons && sups && equal
+	if a.precedenceFilterSuppressed != other.precedenceFilterSuppressed {
+		return false
+	}
+
+	if a.contextID != NoneContextID && other.contextID != NoneContextID {
+		if a.contextID != other.contextID {
+			return false
+		}
+	} else {
+		if !a.GetContext().Equals(other.GetContext()) {
+			return false
+		}
+	}
+
+	if a.semanticContextID != NoneSemanticContextID && other.semanticContextID != NoneSemanticContextID {
+		return a.semanticContextID == other.semanticContextID
+	}
+
+	return a.GetSemanticContext().Equals(other.GetSemanticContext())
 }
 
 // Hash is the default hash function for a parser ATNConfig, when no specialist hash function
@@ -211,11 +231,18 @@ func (a *ATNConfig) PHash() int {
 		c = a.context.Hash()
 	}
 
+	var s int
+	if a.semanticContextID != NoneSemanticContextID {
+		s = int(a.semanticContextID)
+	} else {
+		s = a.GetSemanticContext().Hash()
+	}
+
 	h := murmurInit(7)
 	h = murmurUpdate(h, a.state.GetStateNumber())
 	h = murmurUpdate(h, a.alt)
 	h = murmurUpdate(h, c)
-	h = murmurUpdate(h, a.semanticContext.Hash())
+	h = murmurUpdate(h, s)
 	return murmurFinish(h, 4)
 }
 
@@ -302,11 +329,18 @@ func (a *ATNConfig) LHash() int {
 		c = a.GetContext().Hash()
 	}
 
+	var s int
+	if a.semanticContextID != NoneSemanticContextID {
+		s = int(a.semanticContextID)
+	} else {
+		s = a.GetSemanticContext().Hash()
+	}
+
 	h := murmurInit(7)
 	h = murmurUpdate(h, a.state.GetStateNumber())
 	h = murmurUpdate(h, a.alt)
 	h = murmurUpdate(h, c)
-	h = murmurUpdate(h, a.semanticContext.Hash())
+	h = murmurUpdate(h, s)
 	h = murmurUpdate(h, f)
 	h = murmurUpdate(h, a.lexerActionExecutor.Hash())
 	h = murmurFinish(h, 6)

@@ -78,14 +78,14 @@ func (b *ATNConfigSet) configEquals(c1, c2 *ATNConfig) bool {
 	if b.useObjEq {
 		return c1.Equals(c2)
 	}
-	return aConfCompInst.Equals2(c1, c2)
+	return c1.PEquals(c2)
 }
 
 func (b *ATNConfigSet) configHash(c *ATNConfig) int {
 	if b.useObjEq {
 		return c.Hash()
 	}
-	return aConfCompInst.Hash1(c)
+	return c.PHash()
 }
 
 // Add merges contexts with existing configs for (s, i, pi, _),
@@ -298,11 +298,17 @@ func (b *ATNConfigSet) Clear() {
 func (b *ATNConfigSet) Commit() {
 	contextLock.Lock()
 	defer contextLock.Unlock()
+	semanticLock.Lock()
+	defer semanticLock.Unlock()
 	for i := 0; i < len(b.configs); i++ {
 		c := &b.configs[i]
 		if c.contextID == NoneContextID && c.context != nil {
 			c.contextID = nextIDInternal(c.context)
 			c.context = nil
+		}
+		if c.semanticContextID == NoneSemanticContextID && c.semanticContext != nil {
+			c.semanticContextID = NextSemanticIDInternal(c.semanticContext)
+			c.semanticContext = nil
 		}
 	}
 }
