@@ -288,10 +288,12 @@ func (b *ATNConfigSet) Clear() {
 }
 
 func (b *ATNConfigSet) Commit() {
+	contextLock.Lock()
+	defer contextLock.Unlock()
 	for i := 0; i < len(b.configs); i++ {
 		c := &b.configs[i]
 		if c.contextID == NoneContextID && c.context != nil {
-			c.contextID = nextID(c.context)
+			c.contextID = nextIDInternal(c.context)
 			c.context = nil
 		}
 	}

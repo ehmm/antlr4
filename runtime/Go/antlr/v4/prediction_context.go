@@ -82,28 +82,25 @@ func nextID(ctx *PredictionContext) ContextID {
 		return NoneContextID
 	}
 	contextLock.Lock()
-	if ctx.id != NoneContextID {
-		id := ctx.id
-		contextLock.Unlock()
-		return id
-	}
-	contextLock.Unlock()
-
-	// Recursively ensure parents have IDs.
-	// We do this WITHOUT holding the lock to avoid deadlocks.
-	if ctx.pcType == PredictionContextArray {
-		for _, parent := range ctx.parents {
-			nextID(parent)
-		}
-	} else if ctx.parentCtx != nil {
-		nextID(ctx.parentCtx)
-	}
-
-	contextLock.Lock()
 	defer contextLock.Unlock()
-	// Re-check ID after re-taking lock
+	return nextIDInternal(ctx)
+}
+
+func nextIDInternal(ctx *PredictionContext) ContextID {
+	if ctx == nil {
+		return NoneContextID
+	}
 	if ctx.id != NoneContextID {
 		return ctx.id
+	}
+
+	// Recursively ensure parents have IDs.
+	if ctx.pcType == PredictionContextArray {
+		for _, parent := range ctx.parents {
+			nextIDInternal(parent)
+		}
+	} else if ctx.parentCtx != nil {
+		nextIDInternal(ctx.parentCtx)
 	}
 
 	id := nextContextID
