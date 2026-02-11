@@ -8,6 +8,31 @@ type LL1Analyzer struct {
 	atn *ATN
 }
 
+type LookBusyMap map[int][]*ATNConfig
+
+func (m LookBusyMap) contains(c *ATNConfig) bool {
+	h := c.Hash()
+	bucket := m[h]
+	for _, existing := range bucket {
+		if existing.Equals(c) {
+			return true
+		}
+	}
+	return false
+}
+
+func (m LookBusyMap) put(c *ATNConfig) bool {
+	h := c.Hash()
+	bucket := m[h]
+	for _, existing := range bucket {
+		if existing.Equals(c) {
+			return true
+		}
+	}
+	m[h] = append(bucket, c)
+	return false
+}
+
 func NewLL1Analyzer(atn *ATN) *LL1Analyzer {
 	la := new(LL1Analyzer)
 	la.atn = atn
@@ -41,7 +66,7 @@ func (la *LL1Analyzer) getDecisionLookahead(s ATNState) []*IntervalSet {
 
 		look[alt] = NewIntervalSet()
 		// TODO: This is one of the reasons that ATNConfigs are allocated and freed all the time - fix this tomorrow jim!
-		lookBusy := NewJStore[*ATNConfig, Comparator[*ATNConfig]](aConfEqInst, ClosureBusyCollection, "LL1Analyzer.getDecisionLookahead for lookBusy")
+		lookBusy := make(LookBusyMap)
 		la.look1(s.GetTransitions()[alt].getTarget(), nil, BasePredictionContextEMPTY, look[alt], lookBusy, NewBitSet(), false, false)
 
 		// Wipe out lookahead for la alternative if we found nothing,
@@ -76,7 +101,7 @@ func (la *LL1Analyzer) Look(s, stopState ATNState, ctx RuleContext) *IntervalSet
 	if ctx != nil {
 		lookContext = predictionContextFromRuleContext(s.GetATN(), ctx)
 	}
-	la.look1(s, stopState, lookContext, r, NewJStore[*ATNConfig, Comparator[*ATNConfig]](aConfEqInst, ClosureBusyCollection, "LL1Analyzer.Look for la.look1()"),
+	la.look1(s, stopState, lookContext, r, make(LookBusyMap),
 		NewBitSet(), true, true)
 	return r
 }
@@ -111,7 +136,7 @@ func (la *LL1Analyzer) Look(s, stopState ATNState, ctx RuleContext) *IntervalSet
 // outermost context is reached. This parameter has no effect if {@code ctx}
 // is {@code nil}.
 
-func (la *LL1Analyzer) look2(_, stopState ATNState, ctx *PredictionContext, look *IntervalSet, lookBusy *JStore[*ATNConfig, Comparator[*ATNConfig]],
+func (la *LL1Analyzer) look2(_, stopState ATNState, ctx *PredictionContext, look *IntervalSet, lookBusy LookBusyMap,
 	calledRuleStack *BitSet, seeThruPreds, addEOF bool, i int) {
 
 	returnState := la.atn.states[ctx.getReturnState(i)]
@@ -119,15 +144,15 @@ func (la *LL1Analyzer) look2(_, stopState ATNState, ctx *PredictionContext, look
 
 }
 
-func (la *LL1Analyzer) look1(s, stopState ATNState, ctx *PredictionContext, look *IntervalSet, lookBusy *JStore[*ATNConfig, Comparator[*ATNConfig]], calledRuleStack *BitSet, seeThruPreds, addEOF bool) {
+func (la *LL1Analyzer) look1(s, stopState ATNState, ctx *PredictionContext, look *IntervalSet, lookBusy LookBusyMap, calledRuleStack *BitSet, seeThruPreds, addEOF bool) {
 
 	c := NewATNConfig6(s, 0, ctx)
 
-	if lookBusy.Contains(c) {
+	if lookBusy.contains(c) {
 		return
 	}
 
-	_, present := lookBusy.Put(c)
+	present := lookBusy.put(c)
 	if present {
 		return
 
@@ -204,7 +229,7 @@ func (la *LL1Analyzer) look1(s, stopState ATNState, ctx *PredictionContext, look
 	}
 }
 
-func (la *LL1Analyzer) look3(stopState ATNState, ctx *PredictionContext, look *IntervalSet, lookBusy *JStore[*ATNConfig, Comparator[*ATNConfig]],
+func (la *LL1Analyzer) look3(stopState ATNState, ctx *PredictionContext, look *IntervalSet, lookBusy LookBusyMap,
 	calledRuleStack *BitSet, seeThruPreds, addEOF bool, t1 *RuleTransition) {
 
 	newContext := SingletonBasePredictionContextCreate(ctx, t1.followState.GetStateNumber())

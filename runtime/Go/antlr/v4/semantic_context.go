@@ -371,17 +371,19 @@ func (p *PrecedencePredicate) String() string {
 	return "{" + strconv.Itoa(p.precedence) + ">=prec}?"
 }
 
-func PrecedencePredicatefilterPrecedencePredicates(set *JStore[SemanticContext, Comparator[SemanticContext]]) []*PrecedencePredicate {
-	result := make([]*PrecedencePredicate, 0)
+func PrecedencePredicatefilterPrecedencePredicates(operands []SemanticContext) ([]SemanticContext, []*PrecedencePredicate) {
+	var result []*PrecedencePredicate
+	var filtered []SemanticContext
 
-	set.Each(func(v SemanticContext) bool {
+	for _, v := range operands {
 		if c2, ok := v.(*PrecedencePredicate); ok {
 			result = append(result, c2)
+		} else {
+			filtered = append(filtered, v)
 		}
-		return true
-	})
+	}
 
-	return result
+	return filtered, result
 }
 
 // A semantic context which is true whenever none of the contained contexts
@@ -392,25 +394,35 @@ type AND struct {
 	opnds []SemanticContext
 }
 
+func addSemanticContext(operands []SemanticContext, op SemanticContext) []SemanticContext {
+	for _, existing := range operands {
+		if existing.Equals(op) {
+			return operands
+		}
+	}
+	return append(operands, op)
+}
+
 func NewAND(a, b SemanticContext) *AND {
 
-	operands := NewJStore[SemanticContext, Comparator[SemanticContext]](semctxEqInst, SemanticContextCollection, "NewAND() operands")
+	var operands []SemanticContext
 	if aa, ok := a.(*AND); ok {
 		for _, o := range aa.opnds {
-			operands.Put(o)
+			operands = addSemanticContext(operands, o)
 		}
 	} else {
-		operands.Put(a)
+		operands = addSemanticContext(operands, a)
 	}
 
 	if ba, ok := b.(*AND); ok {
 		for _, o := range ba.opnds {
-			operands.Put(o)
+			operands = addSemanticContext(operands, o)
 		}
 	} else {
-		operands.Put(b)
+		operands = addSemanticContext(operands, b)
 	}
-	precedencePredicates := PrecedencePredicatefilterPrecedencePredicates(operands)
+
+	filtered, precedencePredicates := PrecedencePredicatefilterPrecedencePredicates(operands)
 	if len(precedencePredicates) > 0 {
 		// interested in the transition with the lowest precedence
 		var reduced *PrecedencePredicate
@@ -421,15 +433,13 @@ func NewAND(a, b SemanticContext) *AND {
 			}
 		}
 
-		operands.Put(reduced)
+		operands = addSemanticContext(filtered, reduced)
+	} else {
+		operands = filtered
 	}
 
-	vs := operands.Values()
-	opnds := make([]SemanticContext, len(vs))
-	copy(opnds, vs)
-
 	and := new(AND)
-	and.opnds = opnds
+	and.opnds = operands
 
 	return and
 }
@@ -556,23 +566,24 @@ type OR struct {
 
 func NewOR(a, b SemanticContext) *OR {
 
-	operands := NewJStore[SemanticContext, Comparator[SemanticContext]](semctxEqInst, SemanticContextCollection, "NewOR() operands")
+	var operands []SemanticContext
 	if aa, ok := a.(*OR); ok {
 		for _, o := range aa.opnds {
-			operands.Put(o)
+			operands = addSemanticContext(operands, o)
 		}
 	} else {
-		operands.Put(a)
+		operands = addSemanticContext(operands, a)
 	}
 
 	if ba, ok := b.(*OR); ok {
 		for _, o := range ba.opnds {
-			operands.Put(o)
+			operands = addSemanticContext(operands, o)
 		}
 	} else {
-		operands.Put(b)
+		operands = addSemanticContext(operands, b)
 	}
-	precedencePredicates := PrecedencePredicatefilterPrecedencePredicates(operands)
+
+	filtered, precedencePredicates := PrecedencePredicatefilterPrecedencePredicates(operands)
 	if len(precedencePredicates) > 0 {
 		// interested in the transition with the lowest precedence
 		var reduced *PrecedencePredicate
@@ -583,16 +594,13 @@ func NewOR(a, b SemanticContext) *OR {
 			}
 		}
 
-		operands.Put(reduced)
+		operands = addSemanticContext(filtered, reduced)
+	} else {
+		operands = filtered
 	}
 
-	vs := operands.Values()
-
-	opnds := make([]SemanticContext, len(vs))
-	copy(opnds, vs)
-
 	o := new(OR)
-	o.opnds = opnds
+	o.opnds = operands
 
 	return o
 }

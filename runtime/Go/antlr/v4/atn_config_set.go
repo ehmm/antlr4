@@ -147,14 +147,17 @@ func (b *ATNConfigSet) Add(config *ATNConfig, mergeCache *JPCMap) bool {
 }
 
 // GetStates returns the set of states represented by all configurations in this config set
-func (b *ATNConfigSet) GetStates() *JStore[ATNState, Comparator[ATNState]] {
-
-	// states uses the standard comparator and Hash() provided by the ATNState instance
-	//
-	states := NewJStore[ATNState, Comparator[ATNState]](aStateEqInst, ATNStateCollection, "ATNConfigSet.GetStates()")
+func (b *ATNConfigSet) GetStates() []ATNState {
+	statesMap := make(map[int]ATNState)
 
 	for i := 0; i < len(b.configs); i++ {
-		states.Put(b.configs[i].GetState())
+		state := b.configs[i].GetState()
+		statesMap[state.GetStateNumber()] = state
+	}
+
+	var states []ATNState
+	for _, v := range statesMap {
+		states = append(states, v)
 	}
 
 	return states

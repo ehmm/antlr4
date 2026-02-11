@@ -869,18 +869,36 @@ func mergeArrays(a, b *PredictionContext, rootIsWildcard bool, mergeCache *JPCMa
 //
 //goland:noinspection GoUnusedFunction
 func combineCommonParents(parents *[]*PredictionContext) {
-	uniqueParents := NewJStore[*PredictionContext, Comparator[*PredictionContext]](pContextEqInst, PredictionContextCollection, "combineCommonParents for PredictionContext")
+	uniqueParents := make(map[int][]*PredictionContext)
 
 	for p := 0; p < len(*parents); p++ {
 		parent := (*parents)[p]
 		if parent != nil {
-			_, _ = uniqueParents.Put(parent)
+			h := parent.Hash()
+			bucket := uniqueParents[h]
+			found := false
+			for _, existing := range bucket {
+				if existing.Equals(parent) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				uniqueParents[h] = append(bucket, parent)
+			}
 		}
 	}
 	for q := 0; q < len(*parents); q++ {
 		if (*parents)[q] != nil {
-			pc, _ := uniqueParents.Get((*parents)[q])
-			(*parents)[q] = pc
+			parent := (*parents)[q]
+			h := parent.Hash()
+			bucket := uniqueParents[h]
+			for _, existing := range bucket {
+				if existing.Equals(parent) {
+					(*parents)[q] = existing
+					break
+				}
+			}
 		}
 	}
 }

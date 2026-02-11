@@ -467,25 +467,44 @@ func PredictionModeGetAlts(altsets []*BitSet) *BitSet {
 	return all
 }
 
+type configAlts struct {
+	config *ATNConfig
+	alts   *BitSet
+}
+
 // PredictionModegetConflictingAltSubsets gets the conflicting alt subsets from a configuration set.
 //
 //	for each configuration c in configs:
 //	   map[c] U= c.ATNConfig.alt // map hash/equals uses s and x, not alt and not pred
 func PredictionModegetConflictingAltSubsets(configs *ATNConfigSet) []*BitSet {
-	configToAlts := NewJMap[*ATNConfig, *BitSet, *ATNAltConfigComparator[*ATNConfig]](atnAltCfgEqInst, AltSetCollection, "PredictionModegetConflictingAltSubsets()")
+	configToAlts := make(map[int][]*configAlts)
 
 	for i := 0; i < len(configs.configs); i++ {
 		c := &configs.configs[i]
-
-		alts, ok := configToAlts.Get(c)
-		if !ok {
-			alts = NewBitSet()
-			configToAlts.Put(c, alts)
+		h := atnAltCfgEqInst.Hash1(c)
+		bucket := configToAlts[h]
+		var found *configAlts
+		for _, entry := range bucket {
+			if atnAltCfgEqInst.Equals2(entry.config, c) {
+				found = entry
+				break
+			}
 		}
-		alts.add(c.GetAlt())
+		if found == nil {
+			found = &configAlts{config: c, alts: NewBitSet()}
+			configToAlts[h] = append(bucket, found)
+		}
+		found.alts.add(c.GetAlt())
 	}
 
-	return configToAlts.Values()
+	var values []*BitSet
+	for _, bucket := range configToAlts {
+		for _, entry := range bucket {
+			values = append(values, entry.alts)
+		}
+	}
+
+	return values
 }
 
 // PredictionModeGetStateToAltMap gets a map from state to alt subset from a configuration set.

@@ -14,22 +14,26 @@ import (
 // a standard JStore so that we can use Lazy instantiation of the JStore, mostly
 // to avoid polluting the stats module with a ton of JStore instances with nothing in them.
 type ClosureBusy struct {
-	bMap *JStore[*ATNConfig, Comparator[*ATNConfig]]
-	desc string
+	bMap map[int][]*ATNConfig
 }
 
 // NewClosureBusy creates a new ClosureBusy instance used to avoid infinite recursion for right-recursive rules
-func NewClosureBusy(desc string) *ClosureBusy {
+func NewClosureBusy(_ string) *ClosureBusy {
 	return &ClosureBusy{
-		desc: desc,
+		bMap: make(map[int][]*ATNConfig),
 	}
 }
 
 func (c *ClosureBusy) Put(config *ATNConfig) (*ATNConfig, bool) {
-	if c.bMap == nil {
-		c.bMap = NewJStore[*ATNConfig, Comparator[*ATNConfig]](aConfEqInst, ClosureBusyCollection, c.desc)
+	h := config.Hash()
+	bucket := c.bMap[h]
+	for _, existing := range bucket {
+		if existing.Equals(config) {
+			return existing, true
+		}
 	}
-	return c.bMap.Put(config)
+	c.bMap[h] = append(bucket, config)
+	return config, false
 }
 
 type ParserATNSimulator struct {

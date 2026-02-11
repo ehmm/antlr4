@@ -4,6 +4,8 @@
 
 package antlr
 
+import "sort"
+
 // DFA represents the Deterministic Finite Automaton used by the recognizer, including all the states it can
 // reach and the transitions between them.
 type DFA struct {
@@ -17,8 +19,9 @@ type DFA struct {
 	// good, but the DFAState is an object and can't be used directly as the key as it can in say Java
 	// amd C#, whereby if the hashcode is the same for two objects, then Equals() is called against them
 	// to see if they really are the same object. Hence, we have our own map storage.
+	// context.
 	//
-	states *JStore[*DFAState, *ObjEqComparator[*DFAState]]
+	states map[int][]*DFAState
 
 	numstates int
 
@@ -119,7 +122,11 @@ func (d *DFA) Len() int {
 	if d.states == nil {
 		return 0
 	}
-	return d.states.Len()
+	l := 0
+	for _, b := range d.states {
+		l += len(b)
+	}
+	return l
 }
 
 // Get returns a state that matches s if it is present in the DFA state set. We defer to this
@@ -128,14 +135,29 @@ func (d *DFA) Get(s *DFAState) (*DFAState, bool) {
 	if d.states == nil {
 		return nil, false
 	}
-	return d.states.Get(s)
+	h := s.Hash()
+	bucket := d.states[h]
+	for _, existing := range bucket {
+		if existing.Equals(s) {
+			return existing, true
+		}
+	}
+	return nil, false
 }
 
 func (d *DFA) Put(s *DFAState) (*DFAState, bool) {
 	if d.states == nil {
-		d.states = NewJStore[*DFAState, *ObjEqComparator[*DFAState]](dfaStateEqInst, DFAStateCollection, "DFA via DFA.Put")
+		d.states = make(map[int][]*DFAState)
 	}
-	return d.states.Put(s)
+	h := s.Hash()
+	bucket := d.states[h]
+	for _, existing := range bucket {
+		if existing.Equals(s) {
+			return existing, true
+		}
+	}
+	d.states[h] = append(bucket, s)
+	return s, false
 }
 
 func (d *DFA) getS0() *DFAState {
@@ -151,8 +173,12 @@ func (d *DFA) sortedStates() []*DFAState {
 	if d.states == nil {
 		return []*DFAState{}
 	}
-	vs := d.states.SortedSlice(func(i, j *DFAState) bool {
-		return i.stateNumber < j.stateNumber
+	var vs []*DFAState
+	for _, b := range d.states {
+		vs = append(vs, b...)
+	}
+	sort.Slice(vs, func(i, j int) bool {
+		return vs[i].stateNumber < vs[j].stateNumber
 	})
 
 	return vs
