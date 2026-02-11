@@ -276,7 +276,8 @@ func (l *LexerATNSimulator) getReachableConfigSet(input CharStream, closure *ATN
 	// than a runtimeConfig that already reached an accept state for the same rule
 	SkipAlt := ATNInvalidAltNumber
 
-	for _, cfg := range closure.configs {
+	for i := 0; i < len(closure.configs); i++ {
+		cfg := &closure.configs[i]
 		currentAltReachedAcceptState := cfg.GetAlt() == SkipAlt
 		if currentAltReachedAcceptState && cfg.passedThroughNonGreedyDecision {
 			continue
@@ -570,7 +571,8 @@ func (l *LexerATNSimulator) addDFAState(configs *ATNConfigSet, suppressEdge bool
 	proposed := NewDFAState(-1, configs)
 	var firstConfigWithRuleStopState *ATNConfig
 
-	for _, cfg := range configs.configs {
+	for i := 0; i < len(configs.configs); i++ {
+		cfg := &configs.configs[i]
 		_, ok := cfg.GetState().(*RuleStopState)
 
 		if ok {

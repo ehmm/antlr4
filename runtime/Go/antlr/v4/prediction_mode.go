@@ -184,11 +184,10 @@ func PredictionModehasSLLConflictTerminatingPrediction(mode int, configs *ATNCon
 		if configs.hasSemanticContext {
 			// dup configs, tossing out semantic predicates
 			dup := NewATNConfigSet(false)
-			for _, c := range configs.configs {
-
-				//				NewATNConfig({semanticContext:}, c)
-				c = NewATNConfig2(c, SemanticContextNone)
-				dup.Add(c, nil)
+			for i := 0; i < len(configs.configs); i++ {
+				c := &configs.configs[i]
+				cc := NewATNConfig2(c, SemanticContextNone)
+				dup.Add(cc, nil)
 			}
 			configs = dup
 		}
@@ -475,7 +474,8 @@ func PredictionModeGetAlts(altsets []*BitSet) *BitSet {
 func PredictionModegetConflictingAltSubsets(configs *ATNConfigSet) []*BitSet {
 	configToAlts := NewJMap[*ATNConfig, *BitSet, *ATNAltConfigComparator[*ATNConfig]](atnAltCfgEqInst, AltSetCollection, "PredictionModegetConflictingAltSubsets()")
 
-	for _, c := range configs.configs {
+	for i := 0; i < len(configs.configs); i++ {
+		c := &configs.configs[i]
 
 		alts, ok := configToAlts.Get(c)
 		if !ok {

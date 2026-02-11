@@ -6,9 +6,7 @@ package antlr
 
 import (
 	"fmt"
-	"os"
 	"strconv"
-	"sync/atomic"
 )
 
 var _emptyPredictionContextHash int

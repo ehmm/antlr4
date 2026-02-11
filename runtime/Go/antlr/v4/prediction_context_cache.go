@@ -1,7 +1,5 @@
 package antlr
 
-import "sync/atomic"
-
 // PredictionContextCache is Used to cache [PredictionContext] objects. It is used for the shared
 // context cash associated with contexts in DFA states. This cache
 // can be used for both lexers and parsers.
@@ -31,7 +29,6 @@ func (p *PredictionContextCache) add(ctx *PredictionContext) *PredictionContext 
 		return existing
 	}
 	id := nextID(ctx)
-	atomic.AddInt64(&debugTotalCached, 1)
 	contextLock.Lock()
 	idToContext[id] = ctx
 	contextLock.Unlock()

@@ -542,7 +542,8 @@ func (p *ParserATNSimulator) computeReachSet(closure *ATNConfigSet, t int, fullC
 	var skippedStopStates []*ATNConfig
 
 	// First figure out where we can reach on input t
-	for _, c := range closure.configs {
+	for i := 0; i < len(closure.configs); i++ {
+		c := &closure.configs[i]
 		if runtimeConfig.parserATNSimulatorDebug {
 			fmt.Println("testing " + p.GetTokenName(t) + " at " + c.String())
 		}
@@ -603,7 +604,7 @@ func (p *ParserATNSimulator) computeReachSet(closure *ATNConfigSet, t int, fullC
 		treatEOFAsEpsilon := t == TokenEOF
 		amount := len(intermediate.configs)
 		for k := 0; k < amount; k++ {
-			p.closure(intermediate.configs[k], reach, closureBusy, false, fullCtx, treatEOFAsEpsilon)
+			p.closure(&intermediate.configs[k], reach, closureBusy, false, fullCtx, treatEOFAsEpsilon)
 		}
 	}
 	if t == TokenEOF {
@@ -673,7 +674,8 @@ func (p *ParserATNSimulator) removeAllConfigsNotInRuleStopState(configs *ATNConf
 		return configs
 	}
 	result := NewATNConfigSet(configs.fullCtx)
-	for _, config := range configs.configs {
+	for i := 0; i < len(configs.configs); i++ {
+		config := &configs.configs[i]
 		if _, ok := config.GetState().(*RuleStopState); ok {
 			result.Add(config, p.mergeCache)
 			continue
@@ -756,7 +758,8 @@ func (p *ParserATNSimulator) applyPrecedenceFilter(configs *ATNConfigSet) *ATNCo
 	statesFromAlt1 := make(map[int]*PredictionContext)
 	configSet := NewATNConfigSet(configs.fullCtx)
 
-	for _, config := range configs.configs {
+	for i := 0; i < len(configs.configs); i++ {
+		config := &configs.configs[i]
 		// handle alt 1 first
 		if config.GetAlt() != 1 {
 			continue
@@ -773,7 +776,8 @@ func (p *ParserATNSimulator) applyPrecedenceFilter(configs *ATNConfigSet) *ATNCo
 			configSet.Add(config, p.mergeCache)
 		}
 	}
-	for _, config := range configs.configs {
+	for i := 0; i < len(configs.configs); i++ {
+		config := &configs.configs[i]
 
 		if config.GetAlt() == 1 {
 			// already handled
@@ -936,7 +940,8 @@ func (p *ParserATNSimulator) splitAccordingToSemanticValidity(configs *ATNConfig
 	succeeded := NewATNConfigSet(configs.fullCtx)
 	failed := NewATNConfigSet(configs.fullCtx)
 
-	for _, c := range configs.configs {
+	for i := 0; i < len(configs.configs); i++ {
+		c := &configs.configs[i]
 		if c.GetSemanticContext() != SemanticContextNone {
 			predicateEvaluationResult := c.GetSemanticContext().evaluate(p.parser, outerContext)
 			if predicateEvaluationResult {
