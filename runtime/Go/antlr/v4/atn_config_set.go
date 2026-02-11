@@ -287,6 +287,16 @@ func (b *ATNConfigSet) Clear() {
 	b.configLookup = make(map[int][]int)
 }
 
+func (b *ATNConfigSet) Commit() {
+	for i := 0; i < len(b.configs); i++ {
+		c := &b.configs[i]
+		if c.contextID == NoneContextID && c.context != nil {
+			c.contextID = nextID(c.context)
+			c.context = nil
+		}
+	}
+}
+
 func (b *ATNConfigSet) String() string {
 
 	s := "["

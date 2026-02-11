@@ -86,6 +86,7 @@ func NewDFAState(stateNumber int, configs *ATNConfigSet) *DFAState {
 	if configs == nil {
 		configs = NewATNConfigSet(false)
 	}
+	configs.Commit()
 
 	return &DFAState{configs: configs, stateNumber: stateNumber}
 }

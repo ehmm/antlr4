@@ -22,6 +22,7 @@ type ATNConfig struct {
 	precedenceFilterSuppressed     bool
 	state                          ATNState
 	alt                            int
+	contextID                      ContextID
 	context                        *PredictionContext
 	semanticContext                SemanticContext
 	reachesIntoOuterContext        int
@@ -110,10 +111,14 @@ func (a *ATNConfig) GetAlt() int {
 // SetContext sets the rule invocation stack associated with this configuration
 func (a *ATNConfig) SetContext(v *PredictionContext) {
 	a.context = v
+	a.contextID = NoneContextID
 }
 
 // GetContext returns the rule invocation stack associated with this configuration
 func (a *ATNConfig) GetContext() *PredictionContext {
+	if a.contextID != NoneContextID {
+		return getContextByID(a.contextID)
+	}
 	return a.context
 }
 
@@ -167,10 +172,10 @@ func (a *ATNConfig) PEquals(o Collectable[*ATNConfig]) bool {
 
 	var equal bool
 
-	if a.context == nil {
-		equal = other.context == nil
+	if a.contextID != NoneContextID && other.contextID != NoneContextID {
+		equal = a.contextID == other.contextID
 	} else {
-		equal = a.context.Equals(other.context)
+		equal = a.GetContext().Equals(other.GetContext())
 	}
 
 	var (
@@ -200,7 +205,9 @@ func (a *ATNConfig) Hash() int {
 // is required for a collection
 func (a *ATNConfig) PHash() int {
 	var c int
-	if a.context != nil {
+	if a.contextID != NoneContextID {
+		c = int(a.contextID)
+	} else if a.context != nil {
 		c = a.context.Hash()
 	}
 
@@ -288,10 +295,17 @@ func (a *ATNConfig) LHash() int {
 	} else {
 		f = 0
 	}
+	var c int
+	if a.contextID != NoneContextID {
+		c = int(a.contextID)
+	} else {
+		c = a.GetContext().Hash()
+	}
+
 	h := murmurInit(7)
 	h = murmurUpdate(h, a.state.GetStateNumber())
 	h = murmurUpdate(h, a.alt)
-	h = murmurUpdate(h, a.context.Hash())
+	h = murmurUpdate(h, c)
 	h = murmurUpdate(h, a.semanticContext.Hash())
 	h = murmurUpdate(h, f)
 	h = murmurUpdate(h, a.lexerActionExecutor.Hash())
