@@ -52,10 +52,6 @@ func (s *goRunStats) Report() {
 	fmt.Printf("------------------------------------\n")
 }
 
-func (s *goRunStats) AddJStatRec(_ *JStatRec) {
-	// Compatibility stub
-}
-
 func (s *goRunStats) Analyze() {
 	// Compatibility stub
 }

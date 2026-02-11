@@ -4,25 +4,6 @@
 
 package antlr
 
-// JStatRec is kept for backward compatibility with jcollect.go
-type JStatRec struct {
-	Source           CollectionSource
-	MaxSize          int
-	CurSize          int
-	Gets             int
-	GetHits          int
-	GetMisses        int
-	GetHashConflicts int
-	GetNoEnt         int
-	Puts             int
-	PutHits          int
-	PutMisses        int
-	PutHashConflicts int
-	MaxSlotSize      int
-	Description      string
-	CreateStack      []byte
-}
-
 // NativeCollectionStats tracks basic usage of our new native Go collections.
 type NativeCollectionStats struct {
 	Puts uint64

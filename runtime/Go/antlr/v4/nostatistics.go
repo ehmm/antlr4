@@ -12,10 +12,6 @@ type goRunStats struct {
 
 var Statistics = &goRunStats{}
 
-func (s *goRunStats) AddJStatRec(_ *JStatRec) {
-	// Do nothing - compiler will optimize this out (hopefully)
-}
-
 func (s *goRunStats) AddIDAssignment() {}
 
 func (s *goRunStats) AddBridgeReconstruction() {}
@@ -32,9 +28,8 @@ func (s *goRunStats) Reset() {
 	// Do nothing - compiler will optimize this out (hopefully)
 }
 
-func (s *goRunStats) Report(dir string, prefix string) error {
+func (s *goRunStats) Report() {
 	// Do nothing - compiler will optimize this out (hopefully)
-	return nil
 }
 
 func (s *goRunStats) Analyze() {
