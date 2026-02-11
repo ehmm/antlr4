@@ -1,9 +1,10 @@
+// Copyright (c) 2012-2022 The ANTLR Project. All rights reserved.
+// Use of this file is governed by the BSD 3-clause license that
+// can be found in the LICENSE.txt file in the project root.
+
 package antlr
 
-// A JStatRec is a record of a particular use of a [JStore], [JMap] or JPCMap] collection. Typically, it will be
-// used to look for unused collections that wre allocated anyway, problems with hash bucket clashes, and anomalies
-// such as huge numbers of Gets with no entries found GetNoEnt. You can refer to the CollectionAnomalies() function
-// for ideas on what can be gleaned from these statistics about collections.
+// JStatRec is kept for backward compatibility with jcollect.go
 type JStatRec struct {
 	Source           CollectionSource
 	MaxSize          int
@@ -21,3 +22,26 @@ type JStatRec struct {
 	Description      string
 	CreateStack      []byte
 }
+
+// NativeCollectionStats tracks basic usage of our new native Go collections.
+type NativeCollectionStats struct {
+	Puts uint64
+	Gets uint64
+	Hits uint64
+}
+
+// NativeGoStats is the modern schema for tracking ANTLR4 Go runtime performance.
+type NativeGoStats struct {
+	IDsAssigned       uint64
+	BridgeReconstructions uint64
+	ContextRegistrySize uint64
+	ContextRegistryCap  uint64
+	SemanticRegistrySize uint64
+	
+	ATNConfigSet    NativeCollectionStats
+	MergeCache      NativeCollectionStats
+	ContextCache    NativeCollectionStats
+	DFACache        NativeCollectionStats
+}
+
+var NativeStats NativeGoStats

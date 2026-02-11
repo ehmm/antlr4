@@ -32,6 +32,9 @@ func (p *PredictionContextCache) add(ctx *PredictionContext) *PredictionContext 
 		id, ok := p.singletons[key]
 		if ok {
 			p.lock.RUnlock()
+			if collectStats {
+				Statistics.AddContextCacheHit()
+			}
 			return getContextByID(id)
 		}
 		p.lock.RUnlock()
@@ -53,6 +56,9 @@ func (p *PredictionContextCache) add(ctx *PredictionContext) *PredictionContext 
 		existing := getContextByID(id)
 		if existing.Equals(ctx) {
 			p.lock.RUnlock()
+			if collectStats {
+				Statistics.AddContextCacheHit()
+			}
 			return existing
 		}
 	}

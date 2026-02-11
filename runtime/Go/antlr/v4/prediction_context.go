@@ -107,6 +107,10 @@ func nextIDInternal(ctx *PredictionContext) ContextID {
 	nextContextID++
 	ctx.id = id
 
+	if collectStats {
+		Statistics.AddIDAssignment()
+	}
+
 	data := ContextData{
 		pcType:     int8(ctx.pcType),
 		cachedHash: int32(ctx.cachedHash),
@@ -154,6 +158,10 @@ func getContextByID(id ContextID) *PredictionContext {
 	cached := bridgeCache[slot]
 	if cached != nil && cached.id == id {
 		return cached
+	}
+
+	if collectStats {
+		Statistics.AddBridgeReconstruction()
 	}
 
 	// Bridge: Reconstruct from value store

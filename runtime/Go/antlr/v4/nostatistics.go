@@ -16,6 +16,14 @@ func (s *goRunStats) AddJStatRec(_ *JStatRec) {
 	// Do nothing - compiler will optimize this out (hopefully)
 }
 
+func (s *goRunStats) AddIDAssignment() {}
+
+func (s *goRunStats) AddBridgeReconstruction() {}
+
+func (s *goRunStats) AddContextCacheHit() {}
+
+func (s *goRunStats) AddMergeCacheHit() {}
+
 func (s *goRunStats) CollectionAnomalies() {
 	// Do nothing - compiler will optimize this out (hopefully)
 }
