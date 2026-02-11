@@ -44,7 +44,7 @@ type ParserATNSimulator struct {
 	input          TokenStream
 	startIndex     int
 	dfa            *DFA
-	mergeCache     *JPCMap
+	mergeCache     *MergeCache
 	outerContext   ParserRuleContext
 }
 
@@ -529,7 +529,7 @@ func (p *ParserATNSimulator) execATNWithFullContext(dfa *DFA, D *DFAState, s0 *A
 //goland:noinspection GoBoolExpressions
 func (p *ParserATNSimulator) computeReachSet(closure *ATNConfigSet, t int, fullCtx bool) *ATNConfigSet {
 	if p.mergeCache == nil {
-		p.mergeCache = NewJPCMap(ReachSetCollection, "Merge cache for computeReachSet()")
+		p.mergeCache = NewMergeCache()
 	}
 	intermediate := NewATNConfigSet(fullCtx)
 

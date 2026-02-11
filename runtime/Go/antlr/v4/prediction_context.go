@@ -517,7 +517,7 @@ func predictionContextFromRuleContext(a *ATN, outerContext RuleContext) *Predict
 	return SingletonBasePredictionContextCreate(parent, transition.(*RuleTransition).followState.GetStateNumber())
 }
 
-func merge(a, b *PredictionContext, rootIsWildcard bool, mergeCache *JPCMap) *PredictionContext {
+func merge(a, b *PredictionContext, rootIsWildcard bool, mergeCache *MergeCache) *PredictionContext {
 
 	// Share same graph if both same
 	//
@@ -588,13 +588,9 @@ func convertToArray(pc *PredictionContext) *PredictionContext {
 // otherwise false to indicate a full-context merge
 // @param mergeCache
 // /
-func mergeSingletons(a, b *PredictionContext, rootIsWildcard bool, mergeCache *JPCMap) *PredictionContext {
+func mergeSingletons(a, b *PredictionContext, rootIsWildcard bool, mergeCache *MergeCache) *PredictionContext {
 	if mergeCache != nil {
 		previous, present := mergeCache.Get(a, b)
-		if present {
-			return previous
-		}
-		previous, present = mergeCache.Get(b, a)
 		if present {
 			return previous
 		}
@@ -747,16 +743,9 @@ func mergeRoot(a, b *PredictionContext, rootIsWildcard bool) *PredictionContext 
 // <embed src="images/ArrayMerge_EqualTop.svg" type="image/svg+xml"/></p>
 //
 //goland:noinspection GoBoolExpressions
-func mergeArrays(a, b *PredictionContext, rootIsWildcard bool, mergeCache *JPCMap) *PredictionContext {
+func mergeArrays(a, b *PredictionContext, rootIsWildcard bool, mergeCache *MergeCache) *PredictionContext {
 	if mergeCache != nil {
 		previous, present := mergeCache.Get(a, b)
-		if present {
-			if runtimeConfig.parserATNSimulatorTraceATNSim {
-				fmt.Println("mergeArrays a=" + a.String() + ",b=" + b.String() + " -> previous")
-			}
-			return previous
-		}
-		previous, present = mergeCache.Get(b, a)
 		if present {
 			if runtimeConfig.parserATNSimulatorTraceATNSim {
 				fmt.Println("mergeArrays a=" + a.String() + ",b=" + b.String() + " -> previous")
@@ -950,4 +939,44 @@ func getCachedBasePredictionContext(context *PredictionContext, contextCache *Pr
 	visited.Put(context, updated)
 
 	return updated
+}
+
+type MergeCache struct {
+	cache map[uint64]ContextID
+}
+
+func NewMergeCache() *MergeCache {
+	return &MergeCache{
+		cache: make(map[uint64]ContextID),
+	}
+}
+
+func (m *MergeCache) Get(a, b *PredictionContext) (*PredictionContext, bool) {
+	if a == nil || b == nil || a.id == NoneContextID || b.id == NoneContextID {
+		return nil, false
+	}
+	id1 := a.id
+	id2 := b.id
+	if id1 > id2 {
+		id1, id2 = id2, id1
+	}
+	key := uint64(id1)<<32 | uint64(id2)
+	resID, ok := m.cache[key]
+	if !ok {
+		return nil, false
+	}
+	return getContextByID(resID), true
+}
+
+func (m *MergeCache) Put(a, b, res *PredictionContext) {
+	if a == nil || b == nil || res == nil || a.id == NoneContextID || b.id == NoneContextID || res.id == NoneContextID {
+		return
+	}
+	id1 := a.id
+	id2 := b.id
+	if id1 > id2 {
+		id1, id2 = id2, id1
+	}
+	key := uint64(id1)<<32 | uint64(id2)
+	m.cache[key] = res.id
 }
